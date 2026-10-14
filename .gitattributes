@@ -1,0 +1,6 @@
+# Normalize line endings to LF in the repository.
+#
+# The committed artifacts are consumed on Linux in CI and by Node on any
+# platform. A CRLF checkout would also make the CI guard that rebuilds `lib/`
+# and compares it against the committed output report a spurious diff.
+* text=auto eol=lf

@@ -1,0 +1,15 @@
+# Dependencies — a DSH plugin is consumed from a profile, not from this repo,
+# so nothing here is installed to build or test it.
+node_modules/
+
+# Build output is committed on purpose: the cordis plugin loader does no
+# transpilation, so `main` must resolve to plain JavaScript for a checkout to
+# be loadable without a build step. Do not ignore lib/.
+
+# Local scratch
+*.log
+.DS_Store
+Thumbs.db
+
+# DSH deck-plugin local state (workspace-scoped, not part of the plugin)
+docs/agents/

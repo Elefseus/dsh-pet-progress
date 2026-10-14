@@ -1,0 +1,8 @@
+# dsh-pet-progress bundle patch: inserts its plugin row into the web plugin
+# roster. The single row mounts the host half only — this plugin owns no
+# browser bundle, because it reports through the pet's own contracts
+# (`ctx.pet.announce`, `ctx.pet.registerPanelAction`) rather than rendering a
+# surface of its own.
+- insert:
+    - id: pet-progress
+      name: dsh-pet-progress

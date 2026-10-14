@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The low end of the supported range is the point of the matrix: the
+        # build leans on `stripTypeScriptTypes` and the tests run `.ts` files
+        # directly, both of which are Node-version sensitive.
+        node: ['22.19.0', '24.x']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Test
+        run: node --test src/*.test.ts
+
+      - name: Build is reproducible
+        # `lib/` is committed because the cordis loader does no transpilation.
+        # If a source edit is not accompanied by a rebuild, that must fail here
+        # rather than in someone's profile.
+        run: |
+          node build.mjs
+          if ! git diff --quiet -- lib; then
+            echo "::error::lib/ is out of date with src/ — run 'node build.mjs' and commit lib/"
+            git --no-pager diff --stat -- lib
+            exit 1
+          fi

@@ -1,0 +1,63 @@
+{
+  "name": "dsh-pet-progress",
+  "version": "0.1.0",
+  "description": "Progress companion for the dsh web pet: folds durable todo/write and goal/change session events into the pet's status bubble so it reports how much of the work is left, not just what the model is doing right now",
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test src/*.test.ts",
+    "prepack": "node build.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "dsh-pet",
+    "pet",
+    "progress",
+    "todo",
+    "deepseek-harness"
+  ],
+  "license": "MIT",
+  "author": "Elefseus",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Elefseus/dsh-pet-progress.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Elefseus/dsh-pet-progress/issues"
+  },
+  "homepage": "https://github.com/Elefseus/dsh-pet-progress#readme",
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.1.7-rc.1"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/**/*.js",
+    "src/**/*.ts",
+    "cordis.patch.yml",
+    "build.mjs",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@linxin666/dsh-pet": ">=0.4.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4"
+  }
+}
