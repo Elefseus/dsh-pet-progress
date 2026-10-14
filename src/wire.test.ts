@@ -10,7 +10,7 @@
  */
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { renderBubble, foldProgressEvent, PROGRESS_TTL_MS } from './progress.ts'
 
 /**
@@ -25,12 +25,47 @@ import { renderBubble, foldProgressEvent, PROGRESS_TTL_MS } from './progress.ts'
  * If the pet ever restructures that bundle this throws loudly instead of
  * silently testing nothing.
  */
+/**
+ * Locate the pet's built bundle, or `undefined` when it is not installed.
+ *
+ * This test validates our bubbles against the pet's REAL validator, which only
+ * exists inside a dsh profile that has the pet installed. There is no portable
+ * way to obtain it — the pet is a peer dependency, and its validator is inlined
+ * into its bundle rather than exported — so on a machine (or CI runner) without
+ * the pet, this suite must SKIP rather than fail. A hardcoded path here would
+ * make the suite green only on the machine it was written on, which is worse
+ * than skipping: it would report a passing wire contract that was never checked.
+ *
+ * Override with `DSH_PET_LIB=<path to @linxin666/dsh-pet/lib/index.js>`.
+ */
+function findPetLib(): string | undefined {
+  const candidates = [
+    process.env['DSH_PET_LIB'],
+    // Profile-local install (the normal case).
+    ...(process.env['DSH_HOME']
+      ? [`${process.env['DSH_HOME']}/profiles/desktop/node_modules/@linxin666/dsh-pet/lib/index.js`]
+      : []),
+    // A checkout sitting next to this one, and the plain node_modules layout,
+    // so `npm install` in a fork is enough to enable the suite.
+    new URL('../node_modules/@linxin666/dsh-pet/lib/index.js', import.meta.url).pathname,
+  ]
+  for (const candidate of candidates) {
+    if (candidate === undefined) continue
+    try {
+      if (statSync(candidate).isFile()) return candidate
+    } catch {
+      // Not there; try the next candidate.
+    }
+  }
+  return undefined
+}
+
 function loadPetValidator(): {
   parseAnnouncement: (input: unknown, now: number) => Record<string, unknown> | undefined
   ANNOUNCE_MAX_TTL_MS: number
-} {
-  const petLib = process.env['DSH_PET_LIB'] ??
-    'C:/Users/Elef/.dsh/profiles/desktop/node_modules/@linxin666/dsh-pet/lib/index.js'
+} | undefined {
+  const petLib = findPetLib()
+  if (petLib === undefined) return undefined
   const lines = readFileSync(petLib, 'utf8').split('\n')
 
   /** Collect one `function name(...) { ... }` body by brace matching. */
@@ -65,7 +100,7 @@ function loadPetValidator(): {
     ${takeFunction('parseAnnouncement')}
     return { parseAnnouncement, ANNOUNCE_MAX_TTL_MS };
   `
-  return new Function(code)() as ReturnType<typeof loadPetValidator>
+  return new Function(code)() as Exclude<ReturnType<typeof loadPetValidator>, undefined>
 }
 
 const pet = loadPetValidator()
@@ -74,6 +109,7 @@ const now = Date.now()
 /** Validate one rendered bubble the way the host will. */
 function throughPet(bubble: ReturnType<typeof renderBubble>) {
   assert.ok(bubble, 'renderBubble produced nothing')
+  assert.ok(pet, 'wire suite ran without the pet validator loaded')
   return pet.parseAnnouncement(
     {
       source: 'pet-progress',
@@ -88,7 +124,7 @@ function throughPet(bubble: ReturnType<typeof renderBubble>) {
   )
 }
 
-describe('bubble wire contract', () => {
+describe('bubble wire contract', { skip: pet === undefined ? 'the pet is not installed; set DSH_PET_LIB to run this suite' : false }, () => {
   it('renders a blocked goal into a payload the pet accepts', () => {
     const fold = foldProgressEvent(undefined, 'goal/change', {
       operation: 'block',
