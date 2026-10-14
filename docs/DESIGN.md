@@ -84,8 +84,19 @@ to show nothing at all, leaving the pet's own phase word as the only signal.
 
 The fallback is a **plain activity line**: the pet's phase vocabulary
 (`正在调用工具`, `等待模型响应`, …) or, better, the model's most recent words. It
-carries **no `percent`** and does not pretend to be a measurement — the same
-announcement slot shows a title and note with the meter absent.
+carries **no `percent`** and does not pretend to be a measurement.
+
+That line needs the one shape the announcement contract does *not* have. The pet
+validates every payload: `plan` requires a `percent`, `balance` and `cost`
+require an `amount`, and `parseAnnouncement` returns `undefined` for anything
+else — which the pet then drops **in silence**, so the failure looks exactly like
+a progress bubble that was never sent. The summary therefore rides `cost`, the
+shape whose `amount` the client renders verbatim as the bubble's body, and the
+lead (`title`) names the source instead: that is the only text a numberless
+bubble is guaranteed to have. `announcePayload` in `src/progress.ts` derives the
+kind from the bubble in one place, so the host adapter and `src/wire.test.ts`
+cannot disagree about it — the wire suite builds its payloads through the same
+function and checks them against the pet's real validator.
 
 Four rules keep that line honest and stable:
 
@@ -105,8 +116,8 @@ Four rules keep that line honest and stable:
   `turn/start` starts clean. The parked-view rule below covers todo-bearing
   sessions only.
 
-The note under the title names the source: `当前过程` for a phase line,
-`最近输出` for the model's own words.
+The lead names the source: `当前过程` for a phase line, `最近输出` for the model's
+own words. The body is the line itself.
 
 ## Standing is not permanent
 

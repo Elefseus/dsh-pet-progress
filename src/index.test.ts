@@ -60,6 +60,27 @@ function makePet() {
   return { pet, announcements, actions }
 }
 
+/**
+ * Assert one captured announcement satisfies the pet's announcement contract.
+ *
+ * `parseAnnouncement` (in `@linxin666/dsh-pet/announce`) returns undefined for a
+ * payload that breaks the contract, and `announce` answers `{ ok: false }`, so a
+ * violating payload is dropped in silence and its bubble never renders. `plan`
+ * requires a percent; `balance` and `cost` require an amount; all three require
+ * a source, a title, and a known tone.
+ */
+function assertAnnounceable(a: Record<string, unknown>): void {
+  assert.equal(typeof a.source, 'string', 'a source is required')
+  assert.ok(typeof a.title === 'string' && a.title !== '', 'a title is required')
+  assert.ok(a.tone === 'ok' || a.tone === 'warn' || a.tone === 'low', `unknown tone ${String(a.tone)}`)
+  if (a.kind === 'plan') {
+    assert.equal(typeof a.percent, 'number', 'kind plan requires a percent')
+    return
+  }
+  assert.ok(a.kind === 'cost' || a.kind === 'balance', `unknown kind ${String(a.kind)}`)
+  assert.ok(typeof a.amount === 'string' && a.amount !== '', `kind ${String(a.kind)} requires an amount`)
+}
+
 const session = (id: string) => ({ id })
 
 describe('pet-progress host half', () => {
@@ -151,9 +172,11 @@ describe('pet-progress host half', () => {
       // of an empty slot while the agent works without a todo list.
       ctx.emit('session/event', session('s1'), { type: 'turn/start', data: { turn: 1 } })
       assert.equal(announcements.length, 1)
-      assert.equal(announcements[0]!.title, '等待模型响应')
-      assert.equal(announcements[0]!.note, '当前过程')
-      assert.equal(announcements[0]!.percent, undefined, 'a summary is not a measurement')
+      const first = announcements[0]!
+      assert.equal(first.kind, 'cost', 'a bubble with no number must not ride the plan kind')
+      assert.equal(first.title, '当前过程')
+      assert.equal(first.amount, '等待模型响应')
+      assert.equal(first.percent, undefined, 'a summary is not a measurement')
     })
 
     it('keeps working after many turn boundaries', () => {
@@ -205,22 +228,25 @@ describe('pet-progress host half', () => {
     const { pet, announcements } = makePet()
     apply({ ...ctx, pet } as never, {})
 
-    // No todo list and no goal: the summary IS the bubble.
+    // No todo list and no goal: the summary IS the bubble. The lead names the
+    // source and the line is the body, because the pet requires a number for a
+    // `plan` bubble and renders a text body through `cost`.
     ctx.emit('session/event', session('s1'), { type: 'tool/call', data: { name: 'bash' } })
     assert.equal(announcements.length, 1)
-    assert.equal(announcements[0]!.title, '正在调用 bash')
+    assert.equal(announcements[0]!.kind, 'cost')
+    assert.equal(announcements[0]!.title, '当前过程')
+    assert.equal(announcements[0]!.amount, '正在调用 bash')
     assert.equal(announcements[0]!.percent, undefined)
-    assert.equal(announcements[0]!.note, '当前过程')
 
-    // The model's own words are the best summary there is, and they carry the
-    // '最近输出' note so a reader knows they are quoted rather than derived.
+    // The model's own words are the best summary there is, and they are labelled
+    // '最近输出' so a reader knows they are quoted rather than derived.
     ctx.emit('session/event', session('s1'), {
       type: 'assistant/message',
       data: { message: { content: [{ type: 'text', text: '正在核对构建产物是否与源码一致' }] } },
     })
     assert.equal(announcements.length, 2)
-    assert.equal(announcements[1]!.title, '正在核对构建产物是否与源码一致')
-    assert.equal(announcements[1]!.note, '最近输出')
+    assert.equal(announcements[1]!.title, '最近输出')
+    assert.equal(announcements[1]!.amount, '正在核对构建产物是否与源码一致')
 
     // A real todo list supersedes the summary: from here on the summary is
     // never read again, even though activity events keep arriving.
@@ -265,14 +291,14 @@ describe('pet-progress host half', () => {
     ctx.emit('session/event', session('s1'), { type: 'turn/end', data: {} })
     ctx.emit('session/event', session('s1'), { type: 'turn/start', data: { turn: 2 } })
     assert.equal(announcements.length, 2)
-    assert.equal(announcements[1]!.title, '等待模型响应', 'the new turn, not the stale summary')
+    assert.equal(announcements[1]!.amount, '等待模型响应', 'the new turn, not the stale summary')
 
     // The stale summary is gone for good: a later `tool/result` reports the
     // phase it actually is rather than falling back to what the old turn did.
     ctx.emit('session/event', session('s1'), { type: 'tool/result', data: {} })
     ctx.emit('session/event', session('s1'), { type: 'step/start', data: {} })
     assert.equal(announcements.length, 3)
-    assert.equal(announcements[2]!.title, '等待模型响应')
+    assert.equal(announcements[2]!.amount, '等待模型响应')
   })
 
   it('reports only phases it has copy for', () => {
@@ -288,7 +314,8 @@ describe('pet-progress host half', () => {
     // `waiting` and `tool` name something concrete, so they publish.
     ctx.emit('session/event', session('s1'), { type: 'step/start', data: {} })
     assert.equal(announcements.length, 1)
-    assert.equal(announcements[0]!.title, '等待模型响应')
+    assert.equal(announcements[0]!.title, '当前过程')
+    assert.equal(announcements[0]!.amount, '等待模型响应')
 
     // `thinking` and `review` are internal states: recorded on the view (the
     // panel prints them) but never published, so the bubble does not flicker
@@ -305,7 +332,33 @@ describe('pet-progress host half', () => {
 
     ctx.emit('session/event', session('s1'), { type: 'tool/call', data: { name: 'read' } })
     assert.equal(announcements.length, 1)
-    assert.equal(announcements[0]!.title, '正在调用 read')
+    assert.equal(announcements[0]!.amount, '正在调用 read')
+  })
+
+  it('publishes only announcement shapes the pet accepts', () => {
+    // Regression: a `plan` announcement without a percent is rejected by the
+    // pet's validator and dropped without a word, so the summary bubble rode a
+    // shape that could never render — every other test here passed while the
+    // feature was invisible on screen.
+    const { ctx } = makeCtx()
+    const { pet, announcements } = makePet()
+    apply({ ...ctx, pet } as never, {})
+
+    // Drive both shapes: a summary first, then real measurements.
+    for (const event of [
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'tool/call', data: { name: 'bash' } },
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '读完了' }] } } },
+      { type: 'todo/write', data: { todos: [{ content: '写测试', status: 'in_progress' }] } },
+      { type: 'goal/change', data: { operation: 'create', goal: { objective: '发布', phase: 'active' } } },
+    ]) {
+      ctx.emit('session/event', session('s1'), event)
+    }
+
+    const kinds = new Set(announcements.map(a => a.kind))
+    assert.ok(kinds.has('cost'), 'the summary shape is exercised')
+    assert.ok(kinds.has('plan'), 'the measured shape is exercised')
+    for (const a of announcements) assertAnnounceable(a)
   })
 
   it('never throws into the pet event path on a malformed payload', () => {

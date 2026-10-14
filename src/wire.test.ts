@@ -11,7 +11,13 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, statSync } from 'node:fs'
-import { renderBubble, foldProgressEvent, PROGRESS_TTL_MS } from './progress.ts'
+import {
+  announcePayload,
+  renderBubble,
+  foldProgressEvent,
+  PROGRESS_TTL_MS,
+  type ProgressView,
+} from './progress.ts'
 
 /**
  * Load the pet's real validator. It is not re-exported from the package index
@@ -110,18 +116,9 @@ const now = Date.now()
 function throughPet(bubble: ReturnType<typeof renderBubble>) {
   assert.ok(bubble, 'renderBubble produced nothing')
   assert.ok(pet, 'wire suite ran without the pet validator loaded')
-  return pet.parseAnnouncement(
-    {
-      source: 'pet-progress',
-      kind: 'plan',
-      title: bubble.title,
-      percent: bubble.percent,
-      tone: bubble.tone,
-      note: bubble.note,
-      ttlMs: PROGRESS_TTL_MS,
-    },
-    now,
-  )
+  // The payload is built by the same function the host adapter uses, so this
+  // cannot pass against a shape the plugin does not actually send.
+  return pet.parseAnnouncement(announcePayload(bubble, PROGRESS_TTL_MS), now)
 }
 
 describe('bubble wire contract', { skip: pet === undefined ? 'the pet is not installed; set DSH_PET_LIB to run this suite' : false }, () => {
@@ -191,6 +188,34 @@ describe('bubble wire contract', { skip: pet === undefined ? 'the pet is not ins
     for (const tone of tones) {
       assert.ok(['ok', 'warn', 'low'].includes(tone), `tone ${tone} is not in the pet vocabulary`)
     }
+  })
+
+  it('renders an activity summary into a payload the pet accepts', () => {
+    // Regression: the summary bubble was published as a `plan` with no percent,
+    // which `parseAnnouncement` drops outright — so it never rendered even though
+    // every pure-projection test passed. A state has no honest number, so it has
+    // to ride the shape that takes none.
+    const phase: ProgressView = {
+      total: 0, completed: 0, pending: 0, inProgress: 0, percent: 0,
+      activity: { line: '正在调用 bash', source: 'phase', phase: 'tool' },
+    }
+    const parsed = throughPet(renderBubble(phase))
+    assert.ok(parsed, 'pet REJECTED the phase-summary bubble')
+    assert.equal(parsed['kind'], 'cost')
+    assert.equal(parsed['title'], '当前过程')
+    assert.equal(parsed['amount'], '正在调用 bash')
+    assert.equal(parsed['percent'], undefined)
+
+    // The quoted variant carries unbounded model prose, so it is the one that can
+    // run into the contract's TEXT_MAX.
+    const quoted: ProgressView = {
+      ...phase,
+      activity: { line: '好'.repeat(400), source: 'text', phase: 'review' },
+    }
+    const long = throughPet(renderBubble(quoted))
+    assert.ok(long, 'pet rejected an over-long summary')
+    assert.equal(long['title'], '最近输出')
+    assert.ok((long['amount'] as string).length <= 120)
   })
 
   it('bounds the title and note the way the pet would', () => {

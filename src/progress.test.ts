@@ -15,6 +15,7 @@ import {
   foldTodos,
   goalPercent,
   renderBubble,
+  PROGRESS_AMOUNT_MAX,
   PROGRESS_TITLE_MAX,
   type ProgressView,
 } from './progress.ts'
@@ -209,6 +210,34 @@ describe('renderBubble', () => {
     assert.equal(bubble.percent, 25)
     assert.equal(bubble.note, '2/8 轮')
     assert.equal(bubble.tone, 'warn')
+  })
+
+  it('reports an activity summary as a body led by its source', () => {
+    // A state, not a measurement, so the line is the bubble's BODY — `amount`,
+    // which the pet renders verbatim — and the lead names where it came from.
+    // There is no percent: the pet's contract rejects a `plan` without one, so a
+    // summary must ride the `cost` shape instead (see the host-half adapter).
+    const view: ProgressView = {
+      total: 0, completed: 0, pending: 0, inProgress: 0, percent: 0,
+      activity: { line: '正在调用 bash', source: 'phase', phase: 'tool' },
+    }
+    const bubble = renderBubble(view)!
+    assert.equal(bubble.title, '当前过程')
+    assert.equal(bubble.amount, '正在调用 bash')
+    assert.equal(bubble.percent, undefined)
+
+    const quoted = renderBubble({
+      ...view,
+      activity: { line: '读完了', source: 'text', phase: 'review' },
+    })!
+    assert.equal(quoted.title, '最近输出')
+    assert.equal(quoted.amount, '读完了')
+
+    const long = renderBubble({
+      ...view,
+      activity: { line: '字'.repeat(400), source: 'text', phase: 'review' },
+    })!
+    assert.ok(long.amount!.length <= PROGRESS_AMOUNT_MAX)
   })
 
   it('says nothing when there is nothing to report', () => {

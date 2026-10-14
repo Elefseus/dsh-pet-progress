@@ -42,7 +42,7 @@ A small bubble above the pet, refreshed about once a second:
 | Todo list, several tasks in progress | `3/7 · 43%`, naming none |
 | Long-lived goal with no todos | `2/8 轮` — the goal's round budget |
 | Goal blocked | The block reason, in place of progress |
-| No todo list and no goal | A plain line with no percentage — `等待模型响应`, `正在调用工具`, or the model's own words |
+| No todo list and no goal | A plain line with no percentage — `等待模型响应`, `正在调用工具`, or the model's own words, led by `当前过程` or `最近输出` |
 
 The bubble fades out about 30 seconds after the last progress update, so a
 finished turn doesn't leave a stale percentage on screen. It comes back by itself

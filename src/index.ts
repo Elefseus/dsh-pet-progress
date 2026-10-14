@@ -35,18 +35,19 @@ import type { Context } from '@deepseek-ai/cordis'
 // types `ctx.pet`. Also erased at runtime.
 import type {} from '@linxin666/dsh-pet'
 import {
+  announcePayload,
   foldProgressEvent,
   readActivity,
   renderBubble,
+  PROGRESS_SOURCE,
   PROGRESS_TTL_MS,
   type ActivitySummary,
   type ProgressView,
   type ProgressBubble,
 } from './progress.ts'
 
-/** The announcement slot key. One slot per publisher, so this coexists with
- * the quota / balance bubbles other plugins push. */
-export const PROGRESS_SOURCE = 'pet-progress'
+// Re-exported for callers that read the plugin's identity off the host half.
+export { PROGRESS_SOURCE }
 
 /** The panel action id a click dispatches back on. */
 export const PROGRESS_ACTION_ID = 'pet-progress'
@@ -171,6 +172,15 @@ interface PetLike {
   registerPanelAction(action: unknown): unknown
 }
 
+/**
+ * Whether the pet refused an announcement. Its validator answers `{ ok: false }`
+ * for a payload it cannot accept and the bubble never renders, so this is the
+ * only signal that a bubble went missing rather than merely being empty.
+ */
+function isRejected(result: unknown): boolean {
+  return typeof result === 'object' && result !== null && (result as { ok?: unknown }).ok === false
+}
+
 /** Mount the companion against a resolved pet service. */
 function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
   if (config.enabled === false) return
@@ -182,19 +192,21 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
   const sessions = new Map<string, SessionProgress>()
   /** The session whose progress owns the single announcement slot. */
   let displaySession: string | undefined
+  /** Whether a rejected announcement has already been reported. */
+  let warned = false
 
   /** Publish one bubble into this plugin's announcement slot. */
   const publish = (bubble: ProgressBubble | undefined): void => {
     if (bubble === undefined) return
-    pet.announce({
-      source: PROGRESS_SOURCE,
-      kind: 'plan',
-      title: bubble.title,
-      percent: bubble.percent,
-      tone: bubble.tone,
-      note: bubble.note,
-      ttlMs: Math.max(PROGRESS_TTL_MS, heartbeatMs * 3),
-    })
+    // The wire shape is derived in one place (see `announcePayload`): a bubble
+    // the pet's validator cannot accept is dropped without a word, so the
+    // rejection is surfaced once instead of looking like a plugin with nothing
+    // to say.
+    const result = pet.announce(announcePayload(bubble, Math.max(PROGRESS_TTL_MS, heartbeatMs * 3)))
+    if (!warned && isRejected(result)) {
+      warned = true
+      console.warn('[pet-progress] the pet rejected the announcement; no bubble will render')
+    }
   }
 
   /**
