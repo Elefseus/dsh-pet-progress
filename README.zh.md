@@ -1,59 +1,63 @@
 # dsh-pet-progress
 
-让 [dsh 网页宠物](https://github.com/zhu1090093659/dsh-pet) 汇报**还剩多少活没干完**，而不只是"模型此刻在做什么"。
+**给你的桌面宠物加一个进度条。**
 
-[English](./README.md)
+[dsh 网页宠物](https://github.com/zhu1090093659/dsh-pet) 只会告诉你 agent
+*此刻*在干什么——思考、调工具、做完。它没法表达一个长任务完成了多少，
+所以一个已经做了九成的任务，看起来和刚开始一模一样。
 
-## 它补的是什么缺口
+这个插件补上这一块：它读取 agent 本来就写进会话的 todo 列表和目标，
+折算成百分比气泡显示在宠物上。如果一个会话压根没写过 todo 列表，也不会
+空着——这时气泡退回成一行纯文字，说明当下正在做什么。
 
-宠物本身已经有一套很丰富的**瞬时活动**词汇：
+![宠物显示 3/7 · 43%，并标注当前任务](docs/images/hero.png)
 
-```
-'idle' | 'waiting' | 'thinking' | 'tool' | 'review' | 'done' | 'failed'
-```
+## 安装
 
-这七个词描述的都是"此刻"。它们没有一个能表达*"7 个任务完成了 3 个"*，所以一个长任务在刚开工和快收尾时看起来一模一样；而当模型在步骤之间安静下来时，宠物会退回 `idle`——哪怕还剩一大堆活。
+一条命令，用插件的完整 GitHub 地址：
 
-持久化的进度信息其实一直都在会话日志里。DSH 把它记成 `todo/write` 和 `goal/change` 事件，但宠物的事件投影只对 `turn/start`、`step/start`、`assistant/message`、`tool/call`、`tool/result`、`turn/end` 做分支，其余一律 `undefined` 丢掉：
-
-```ts
-// 宠物 event-projection.ts 的实际行为
-default:
-  return undefined
+```bash
+dsh plugin add https://github.com/Elefseus/dsh-pet-progress
 ```
 
-也就是说：信息早就写进会话了，只是一直没人读。
+前提是已经装了 [dsh 网页宠物](https://github.com/zhu1090093659/dsh-pet)。
+少了它插件不会崩，只是什么都不显示，dsh 日志里会留一行说明。
 
-## 工作方式
+装完要**重启 DSH**——bundle 只在启动时读取，不重启插件不会挂载。之后
+agent 写下 todo 列表或开始一个目标时，气泡自己就会出现，不需要额外开启什么。
 
-这是一个**独立的姊妹插件**，不是补丁。宠物的源码一行都不改——它是 npm 依赖，将来一次 `dsh plugin add` 就会把它覆盖掉。本插件只使用宠物已经公开的三个扩展点：
+需要多 profile 时，用 `dsh plugin --profile <name> add …` 指定 profile 名。
 
-| 接缝 | 用途 |
+## 你会看到什么
+
+宠物上方冒出一个小气泡，大约每秒刷新一次：
+
+| 情况 | 气泡内容 |
 | --- | --- |
-| `ctx.on('session/event', …)` | 读取 `todo/write` + `goal/change`，在 `turn/end` 时退休气泡，在 `turn/start` 时重新发布——与宠物监听的是同一个通道，双方都能看到全部持久事件 |
-| `ctx.pet.announce(…)` | 把进度气泡发进宠物已有的公告气泡栈 |
-| `ctx.pet.registerPanelAction(…)` | 一个 `进度` 按钮，用来打印完整待办列表（气泡只有一行，放不下） |
+| 有 todo 列表，一个任务进行中 | `3/7 · 43%`，标题是这个任务 |
+| 有 todo 列表，多个任务同时进行中 | `3/7 · 43%`，不点名 |
+| 有长期目标但没有 todo | `2/8 轮`——目标的轮次预算 |
+| 目标被阻塞 | 直接显示阻塞原因，替代进度 |
+| 既没有 todo 列表也没有目标 | 一行不带百分比的文字——`等待模型响应`、`正在调用工具`，或模型自己的话 |
 
-气泡以 `kind: 'plan'` 发布，直接复用宠物现成的百分比条渲染。不需要客户端 bundle——本插件是纯宿主端（host-only）。
+最后一次进度更新后约 30 秒，气泡会自动淡出，这样已经结束的一轮不会把过期的
+百分比留在屏幕上。工作重新开始时它会自己回来。
 
-## 它汇报什么
+可以同时开着多个会话——最近有动静的那个占据这个气泡。
 
-优先级从高到低：
+## 查看完整列表
 
-1. **被阻塞的目标优先级最高**，并显示人类可读的原因——一个卡住的任务是唯一值得打断用户的事。
-2. **有待办列表**时显示百分比条加 `已完成/总数`，标题用当前 `in_progress` 的那条任务。
-3. **只有目标、没有待办**时退回轮次预算，例如 `2/8 轮`。
+气泡只有一行，剩下的内容留了个按钮：点宠物面板上的 **进度**，完整 todo 列表
+会写进 dsh 日志。
 
-两条关于可信度的刻意规则：
+## 几点说明
 
-- **进度绝不虚报。** 无法识别的待办状态一律算作 `pending`（而不是 `completed`）；整份列表都无法解析时，当作*没有信息*，而不是*无事可做*。空写入不会清掉已有气泡。
-- **只有在指代明确时才点名任务。** 如果同时有多条 `in_progress`，气泡只显示数量、不点名任何一条——因为报错任务名的进度报告，比不报名字更糟。
-
-气泡 30 秒过期，并由心跳持续刷新，所以它能扛过安静时段，而不是模型一停止发事件就消失。
-
-但"持续"不等于"永久"：**`turn/end` 会让气泡退休，`turn/start` 会把它带回来。** 给一件已经没人在做的活显示百分比，比不显示更糟；所以回合结束时插件丢掉气泡并停止刷新，让它自然过期。这一点很关键，因为宠物的公告契约**没有撤回操作**——`announce()` 只是*设置*槽位，只有 TTL 能让它过期。所以"撤回气泡"的实现方式是*不再刷新它*；只要再刷新一次，TTL 就会重启，把一个已结束回合的百分比永远钉在屏幕上。
-
-退休只停在气泡这一层，这是刻意设计的。`todo/write` 只在待办列表**发生变化**时才发出，所以一个新回合如果没动这份列表，就什么都不会发；如果退休时把折叠后的视图也一起丢掉，插件就会在该会话第一次回合结束后**永久失声**。因此视图保留，下一个 `turn/start` 直接从它重新发布。
+- **不会虚报进度。** 状态认不出来的 todo 一律算「没做完」。如果一次写入里
+  每一条都读不出来，插件当成「没有信息」处理，保留原来的显示。
+- **不会瞎猜。** 如果同时有多个任务进行中，气泡只显示数量，不点名——
+  点错名字比不点更糟。
+- **只读不猜。** 百分比来自 agent 自己写的 todo 和目标，插件绝不根据「跑了
+  多久」去推断进度。两者都没有时，它显示那行活动文字，而不是一个数字。
 
 ## 环境要求
 
@@ -63,47 +67,8 @@ default:
 | `@linxin666/dsh-pet` | `>=0.4.0`（peer） |
 | Node | `^22.19.0 \|\| >=24.0.0` |
 
-本插件绑定的是宠物的插件接缝契约（`announce`、`registerPanelAction` 以及 `session/event` 通道），版本过旧的宠物不会同时提供这三者。
-
-## 安装
-
-```bash
-node build.mjs          # 从 src/*.ts 生成 lib/*.js
-```
-
-cordis 插件加载器**不做任何转译**，所以 `main` 必须指向普通 JavaScript。为了不引入工具链，`build.mjs` 使用 Node 自带的 TypeScript 转换器——就是 `node file.ts` 背后那一个——并额外重写相对导入路径（这一步转换器本身不做）。
-
-`lib/` 已提交进仓库，所以克隆下来无需构建即可加载。只有改动 `src/` 后才需要重新构建。
-
-然后在该 profile 里声明它并重启 DSH：
-
-```jsonc
-// ~/.dsh/profiles/<profile>/package.json
-{
-  "dependencies": { "dsh-pet-progress": "file:<本目录的绝对路径>" },
-  "dsh": { "profile": { "bundles": ["…原有的…", "dsh-pet-progress"] } }
-}
-```
-
-只加 `bundles` 是不够的——这个包同时必须是一个依赖；并且由于 profile 的包管理器要解析 `file:` 规格，路径里若含非 ASCII 字符，应写成 `file://` URL。改完要重启应用：bundle 只在启动时读取。
-
-从 git 检出安装：
-
-```bash
-dsh plugin add "file:<本目录的路径>"
-```
-
-## 测试
-
-```bash
-node --test src/*.test.ts
-```
-
-48 个测试，除 `node:test` 外不依赖任何测试框架：
-
-- `src/progress.test.ts` —— 投影核心：计数、百分比边界、活动任务歧义、拒绝畸形输入、目标轮次预算、`turn/end` 退休，以及每一条发出的标题/备注都落在公告契约的边界内。
-- `src/wire.test.ts` —— 用宠物真实的 `parseAnnouncement` 限制来校验气泡载荷，确保本插件发出的气泡不会被宠物悄悄丢掉。
-- `src/index.test.ts` —— 宿主端：订阅了正确的事件、忽略其余事件、遇到畸形载荷绝不抛异常、跨事件组合目标与待办状态、停止刷新已退休的气泡、在下一回合把它带回来、在宠物服务尚未就绪时也能挂载、并遵守自己的开关。
+本插件绑定的是宠物的插件接缝契约（`announce`、`registerPanelAction` 以及
+`session/event` 通道），版本过旧的宠物不会同时提供这三者。
 
 ## 配置
 
@@ -113,21 +78,57 @@ apply(ctx, { enabled?: boolean, heartbeatMs?: number })
 
 `enabled: false` 时什么都不挂载。`heartbeatMs` 默认 `10000`。
 
-## 目录结构
+## 在代码里使用
 
+本插件只跑在宿主侧（没有客户端 bundle），宠物服务暴露为 `ctx.pet`。
+下面三个接缝是宠物对外提供的全部扩展点，本插件也只用了这三个：
+
+| 接缝 | 用途 |
+| --- | --- |
+| `ctx.on('session/event', …)` | 读取 `todo/write`、`goal/change`，以及活动行背后的 turn/step/tool/message 事件 |
+| `ctx.pet.announce(…)` | 发布进度气泡 |
+| `ctx.pet.registerPanelAction(…)` | 面板上的 `进度` 按钮 |
+
+想调整淡出时间和同时跟踪的会话数，改
+[`src/progress.ts`](src/progress.ts) 里的 `PROGRESS_TTL_MS` 和
+`MAX_TRACKED_SESSIONS`。
+
+## 开发
+
+`src/*.ts` 是唯一事实来源；`lib/` 是提交进仓库的构建产物，因为 cordis
+加载器不做转译。**改完 `src/` 后必须重新构建并把 `lib/` 一起提交——
+两者不一致 CI 会失败。**
+
+```bash
+node build.mjs              # 从 src/ 重新构建 lib/
+node --test src/*.test.ts   # 52 个测试，只用 node:test
 ```
-src/progress.ts   纯投影：事件 → ProgressView → 气泡文案（不 import cordis）
-src/index.ts      宿主适配层：订阅、会话表、announce + 面板动作
-build.mjs         去类型构建
-cordis.patch.yml  插入宿主行
+
+要改代码就别装，直接把 profile 指向你的工作副本：
+
+```jsonc
+// ~/.dsh/profiles/<profile>/package.json
+{
+  "dependencies": { "dsh-pet-progress": "file:<本目录的绝对路径>" },
+  "dsh": { "profile": { "bundles": ["…原有的…", "dsh-pet-progress"] } }
+}
 ```
 
-## 两个不那么显然的细节
+只加 `bundles` 不够——这个包同时必须是一个依赖。路径里若含非 ASCII 字符，
+应写成 `file://` URL。改完重启应用。
 
-**挂载是延迟的，不是立即的。** 宠物是在它自己的 fiber 内部发布服务的，所以一个姊妹行完全可能在 `ctx.pet` 存在*之前*就被 apply。如果读一次 `ctx.pet` 为 `undefined` 就直接 return，插件会挂载成功、然后在整个启动周期里静默失效，且任何地方都不会报错。因此当服务尚未就绪时，`apply()` 会通过 `ctx.inject(['pet'], …)` 等待它。
+Node 版本固定在 `package.json` 的 `engines` 里，CI 覆盖 `22.19.0` 和 `24.x`。
 
-**公告槽位没有撤回。** `announce()` 只是*设置*槽位，只有 TTL 能让它过期。这就是为什么"撤回气泡"被实现为"停止刷新它"而不是"清除它"，也是为什么插件在回合结束后绝不能再次发布。
+```bash
+dsh plugin --profile desktop up dsh-pet-progress          # 更新到最新默认分支
+dsh plugin --profile desktop add "<repo>#<tag>"           # 改用某个 tag（可复现）
+```
 
-## 许可证
+## 更多
 
-[MIT](./LICENSE)
+- [设计说明](docs/DESIGN.md)——为什么是这样做的：它填补的事件缺口、为什么是
+  兄弟插件而不是打补丁、它汇报什么，以及两个不明显的坑（延迟挂载、公告槽位
+  没有撤回）。
+- [English README](README.md)
+
+MIT

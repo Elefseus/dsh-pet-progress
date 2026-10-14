@@ -1,59 +1,73 @@
 # dsh-pet-progress
 
-Makes the [dsh web pet](https://github.com/zhu1090093659/dsh-pet) report **how much of the work is left**, not just what the model is doing right now.
+**A progress bar for your desktop pet.**
 
-[中文说明](./README.zh.md)
+The [dsh web pet](https://github.com/zhu1090093659/dsh-pet) shows what the agent
+is doing *right now* — thinking, calling a tool, done. It has no way to show how
+much of a long task is finished, so a task that is 90% done looks exactly like
+one that just started.
 
-## The gap this fills
+This plugin fixes that. It reads the todo lists and goals your agent already
+writes to the session, and folds them into a percentage bubble on the pet.
+A session that never writes a todo list isn't left blank either — there the
+bubble falls back to a plain line saying what is happening right now.
 
-The pet already has a rich vocabulary for *transient activity*:
+![The pet showing 3/7 · 43% with the current task named](docs/images/hero.png)
 
+## Install
+
+One command, using the plugin's full GitHub URL:
+
+```bash
+dsh plugin add https://github.com/Elefseus/dsh-pet-progress
 ```
-'idle' | 'waiting' | 'thinking' | 'tool' | 'review' | 'done' | 'failed'
-```
 
-All seven describe the current moment. None of them can express *"3 of 7 tasks done"*, so a long task looks identical whether it has just started or is nearly finished — and when the agent goes quiet between steps, the pet falls back to `idle` even though plenty of work remains.
+This requires the [dsh web pet](https://github.com/zhu1090093659/dsh-pet) to be
+installed. If it is missing, the plugin stays loaded but publishes nothing —
+you'll see a note in the dsh log rather than a crash.
 
-Durable progress does exist in the session log. DSH records it as `todo/write` and `goal/change` events, but the pet's event projection switches only on `turn/start`, `step/start`, `assistant/message`, `tool/call`, `tool/result`, and `turn/end` — everything else returns `undefined` and is dropped:
+**Restart DSH afterwards** — bundles are read only at startup, so the plugin
+won't mount until you do. The bubble then appears on its own the next time your
+agent writes a todo list or starts a goal; there is nothing to switch on.
 
-```ts
-// pet's event-projection.ts, verbatim behaviour
-default:
-  return undefined
-```
+For a named profile, use `dsh plugin --profile <name> add …`.
 
-So the information is already being written to the session; nothing was reading it.
+## What you'll see
 
-## How it works
+A small bubble above the pet, refreshed about once a second:
 
-This is a **separate sibling plugin**, not a patch. The pet's own source is never modified, because it is an npm dependency that a future `dsh plugin add` would overwrite. Instead this plugin uses the three extension points the pet already publishes:
-
-| Seam | Used for |
+| Situation | Bubble |
 | --- | --- |
-| `ctx.on('session/event', …)` | Reading `todo/write` + `goal/change`, retiring on `turn/end`, replaying on `turn/start` — the same channel the pet listens on, so both observe every durable event |
-| `ctx.pet.announce(…)` | Publishing the progress bubble into the pet's existing announcement stack |
-| `ctx.pet.registerPanelAction(…)` | A `进度` button that prints the full todo list, since the bubble is one line |
+| Todo list, one task in progress | `3/7 · 43%` titled with that task |
+| Todo list, several tasks in progress | `3/7 · 43%`, naming none |
+| Long-lived goal with no todos | `2/8 轮` — the goal's round budget |
+| Goal blocked | The block reason, in place of progress |
+| No todo list and no goal | A plain line with no percentage — `等待模型响应`, `正在调用工具`, or the model's own words |
 
-The bubble is published with `kind: 'plan'`, which reuses the pet's existing percent-bar rendering. No client bundle is needed — this plugin is host-only.
+The bubble fades out about 30 seconds after the last progress update, so a
+finished turn doesn't leave a stale percentage on screen. It comes back by itself
+if the work resumes.
 
-## What it reports
+Several sessions can be open at once — the most recently active one owns the
+bubble.
 
-Priority order, highest first:
+## Checking the full list
 
-1. **A blocked goal outranks everything** and shows the human-readable reason — a blocked task is the one thing worth interrupting for.
-2. **A todo list** shows a percentage bar plus `completed/total`, titled with the task currently `in_progress`.
-3. **A goal with no todos** falls back to its round budget, e.g. `2/8 轮`.
+The bubble is one line, so there's a button for the rest: click **进度** on the
+pet panel and the complete todo list is written to the dsh log.
 
-Two deliberate rules about trustworthiness:
+## Good to know
 
-- **Progress is never over-reported.** An unrecognised todo status counts as `pending`, not `completed`, and a list whose entries are all malformed is treated as *no information* rather than as *nothing to do*. An empty write does not blank an existing bubble.
-- **A task is named only when the naming is unambiguous.** If several todos are `in_progress` at once, the bubble shows the count and names none, because a progress report that names the wrong task is worse than one that names none.
-
-The bubble expires after 30 s and is refreshed on a heartbeat, so it survives quiet stretches instead of vanishing the moment the model stops emitting events.
-
-Standing is not the same as permanent, though: **`turn/end` retires the bubble, and `turn/start` brings it back.** A percentage for work nobody is doing any more is worse than no percentage at all, so when a turn ends the plugin drops the bubble and stops refreshing it, letting it expire. This matters because the pet's announcement contract has no retract — `announce()` only sets a slot and only the TTL expires it — so retiring a bubble means *not* re-publishing it. Refreshing even once more would restart the TTL and strand a finished turn's percentage on screen.
-
-Retirement stops at the bubble, deliberately. `todo/write` is emitted only when the todo list **changes**, so a new turn that leaves the list alone emits nothing at all; if retiring also discarded the folded view, the plugin would go permanently mute for that session after its first turn end. The view is therefore kept, and the next `turn/start` re-publishes from it.
+- **It never over-reports.** A todo whose status the plugin doesn't recognise
+  counts as *not done*. If every entry in a write is unreadable, the plugin
+  treats it as "no information" and keeps what it had.
+- **It won't guess.** If several tasks are in progress at once, the bubble shows
+  the count and names none — naming the wrong task would be worse than naming
+  nothing.
+- **It reads, it doesn't judge.** A percentage comes from the todo lists and
+  goals your agent writes; the plugin never infers progress from how long
+  something has been running. Without either, it shows the plain activity line
+  instead of a number.
 
 ## Requirements
 
@@ -63,19 +77,45 @@ Retirement stops at the bubble, deliberately. `todo/write` is emitted only when 
 | `@linxin666/dsh-pet` | `>=0.4.0` (peer) |
 | Node | `^22.19.0 \|\| >=24.0.0` |
 
-The pet's plugin-seam contracts (`announce`, `registerPanelAction`, and the `session/event` channel) are what this plugin binds to, so an older pet will not provide all three.
+The plugin binds to the pet's plugin-seam contract (`announce`,
+`registerPanelAction`, and the `session/event` channel); an older pet does not
+expose all three.
 
-## Install
+## Configuration
 
-```bash
-node build.mjs          # emits lib/*.js from src/*.ts
+```ts
+apply(ctx, { enabled?: boolean, heartbeatMs?: number })
 ```
 
-The cordis plugin loader performs **no transpilation**, so `main` must point at plain JavaScript. Rather than add a toolchain, `build.mjs` uses Node's own TypeScript transformer — the same one behind `node file.ts` — and additionally rewrites relative import specifiers, which the transformer does not do.
+With `enabled: false` nothing mounts. `heartbeatMs` defaults to `10000`.
 
-`lib/` is committed, so a checkout is loadable without building. Rebuild only after editing `src/`.
+## Using it from code
 
-Then declare it in the profile and restart DSH:
+The plugin is host-only (no client bundle). The pet service is available as
+`ctx.pet`, and the same three seams the pet publishes are what this plugin uses:
+
+| Seam | Used for |
+| --- | --- |
+| `ctx.on('session/event', …)` | Reading `todo/write`, `goal/change`, and the turn/step/tool/message events behind the activity line |
+| `ctx.pet.announce(…)` | Publishing the progress bubble |
+| `ctx.pet.registerPanelAction(…)` | The `进度` panel button |
+
+Adjust `PROGRESS_TTL_MS` and `MAX_TRACKED_SESSIONS` in
+[`src/progress.ts`](src/progress.ts) to change the fade-out and how many sessions
+are tracked at once.
+
+## Development
+
+`src/*.ts` is the source of truth; `lib/` is committed build output, because the
+cordis loader does no transpilation. **After editing `src/`, rebuild and commit
+`lib/` with it — CI fails if the two drift apart.**
+
+```bash
+node build.mjs              # rebuild lib/ from src/
+node --test src/*.test.ts   # 52 tests, node:test only
+```
+
+To work on the code, skip installing and point the profile at your checkout:
 
 ```jsonc
 // ~/.dsh/profiles/<profile>/package.json
@@ -85,49 +125,24 @@ Then declare it in the profile and restart DSH:
 }
 ```
 
-`bundles` alone is not enough — the package must also be a dependency, and because the profile's package manager resolves `file:` specs, a path containing non-ASCII characters should be written as a `file://` URL. Restart the app afterwards: bundles are read at boot.
+A `bundles` entry alone is not enough — the package must also be a dependency.
+If the path contains non-ASCII characters, write it as a `file://` URL. Restart
+the app afterwards.
 
-Installing from a git checkout:
-
-```bash
-dsh plugin add "file:<path to this directory>"
-```
-
-## Tests
+Node is pinned in `package.json` `engines` and exercised in CI at `22.19.0` and
+`24.x`.
 
 ```bash
-node --test src/*.test.ts
+dsh plugin --profile desktop up dsh-pet-progress          # update to latest default branch
+dsh plugin --profile desktop add "<repo>#<tag>"           # pin a tag instead (reproducible)
 ```
 
-48 tests, no test framework beyond `node:test`:
+## More
 
-- `src/progress.test.ts` — the projection core: counting, percentage bounds, active-task ambiguity, refusal of malformed input, goal round budgets, `turn/end` retirement, and that every emitted title/note fits the announce contract's bounds.
-- `src/wire.test.ts` — the bubble payload against the pet's actual `parseAnnouncement` limits, so a bubble this plugin emits cannot be silently dropped by the pet.
-- `src/index.test.ts` — the host half: that it subscribes to the right events, ignores the rest, never throws on a malformed payload, composes goal + todo state across separate events, stops refreshing a retired bubble, brings it back on the next turn, mounts when the pet service is not yet available, and honours its off switch.
+- [Design notes](docs/DESIGN.md) — why the plugin is built this way: the event
+  gap it fills, why it's a sibling rather than a patch, what it reports, and the
+  two non-obvious details (deferred mounting, and an announcement slot with no
+  retract).
+- [中文说明](README.zh.md)
 
-## Configuration
-
-```ts
-apply(ctx, { enabled?: boolean, heartbeatMs?: number })
-```
-
-`enabled: false` mounts nothing. `heartbeatMs` defaults to `10000`.
-
-## Layout
-
-```
-src/progress.ts   pure projection: events → ProgressView → bubble copy (no cordis import)
-src/index.ts      host adapter: subscriptions, session table, announce + panel action
-build.mjs         type-stripping build
-cordis.patch.yml  inserts the host row
-```
-
-## Notes on two non-obvious details
-
-**Mounting is deferred, not immediate.** The pet publishes its service from inside its own fiber, so a sibling row can be applied *before* `ctx.pet` exists. Reading `ctx.pet` once and returning would mount the plugin and then silently disable it for the entire boot, with no error anywhere. `apply()` therefore waits via `ctx.inject(['pet'], …)` when the service is not up yet.
-
-**The announcement slot has no retract.** `announce()` only *sets* a slot; only the TTL expires one. That is why retiring a bubble is implemented as "stop refreshing it" rather than "clear it", and why the plugin must never re-publish after a turn ends.
-
-## License
-
-[MIT](./LICENSE)
+MIT
