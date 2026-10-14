@@ -36,8 +36,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@linxin666/dsh-pet'
 import {
   foldProgressEvent,
+  readActivity,
   renderBubble,
   PROGRESS_TTL_MS,
+  type ActivitySummary,
   type ProgressView,
   type ProgressBubble,
 } from './progress.ts'
@@ -74,6 +76,50 @@ interface SessionProgress {
   /** Epoch ms of the last change, for idle expiry. */
   at: number
 }
+
+/**
+ * Activity events that describe what the session is doing RIGHT NOW.
+ *
+ * These are read only when the session has no todo list and no goal — the
+ * summary is a fallback, so the plugin does not spend work folding activity for
+ * sessions that already have a real measurement. They double as the events that
+ * START a session's entry: a session with no todos still needs a view to hang
+ * its summary on.
+ */
+const ACTIVITY_EVENT_TYPES: Record<string, ActivityPhase> = {
+  'turn/start': 'waiting',
+  'step/start': 'waiting',
+  'tool/call': 'tool',
+  'tool/result': 'thinking',
+  'assistant/message': 'review',
+}
+
+/**
+ * The phases whose copy is NOT worth a bubble on its own.
+ *
+ * A summary is only useful while it says something the previous line did not.
+ * '正在思考' and '正在阅读输出' arrive several times a turn and describe the
+ * agent's internal state rather than the work, so they are recorded on the view
+ * (the panel prints them) but never published — otherwise the bubble flickers
+ * between the model's own words and boilerplate between every tool call.
+ */
+const QUIET_PHASES: ReadonlySet<ActivityPhase> = new Set<ActivityPhase>(['thinking', 'review'])
+
+/**
+ * Whether a summary is worth claiming the announcement slot for.
+ *
+ * The model's own words always are — they name the actual work, which is the
+ * whole point of the fallback. A phase line only is when it names something
+ * concrete the session is blocked on (`waiting`, `tool`); the rest are internal
+ * states that would make the bubble flicker between the model's words and
+ * boilerplate between every tool call.
+ */
+function isPublishable(summary: ActivitySummary): boolean {
+  return summary.source === 'text' || !QUIET_PHASES.has(summary.phase)
+}
+
+/** The phase vocabulary this plugin has copy for. */
+type ActivityPhase = 'idle' | 'waiting' | 'thinking' | 'tool' | 'review' | 'done' | 'failed'
 
 /** Plugin config. */
 export interface ProgressConfig {
@@ -184,7 +230,9 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
   // events the pet's own projection ignores. Reading them is pure: the fold
   // returns a new view and the adapter only decides what to publish.
   disposers.push(ctx.on('session/event', (session: SessionLike, event: { type: string; data?: unknown }) => {
-    if (event.type !== 'todo/write' && event.type !== 'goal/change' && event.type !== 'turn/end' && event.type !== 'turn/start') return
+    const phase = ACTIVITY_EVENT_TYPES[event.type]
+    const isProgress = event.type === 'todo/write' || event.type === 'goal/change' || event.type === 'turn/end'
+    if (!isProgress && phase === undefined) return
     const key = String(session.id)
     const entry = sessions.get(key) ?? { at: 0 }
 
@@ -192,10 +240,27 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
     // view is still here, so the bubble comes back without waiting for a
     // `todo/write` that may never arrive (the list only re-emits when it
     // changes). Nothing is resurrected when there is no view to show.
-    if (event.type === 'turn/start') {
-      if (entry.view === undefined || entry.bubble === undefined) return
+    //
+    // Note the fallthrough: `turn/start` is ALSO an activity event (`waiting`),
+    // so a session with nothing to measure must go on and report the new turn
+    // rather than stopping here. Only a session that actually has a bubble to
+    // replay resumes and returns.
+    if (event.type === 'turn/start' && entry.view !== undefined && entry.bubble !== undefined
+      && (entry.view.total > 0 || entry.view.goal !== undefined)) {
       displaySession = key
       publish(entry.bubble)
+      return
+    }
+
+    // The summary is a fallback, so it is only folded for a session that has
+    // neither a todo list nor a goal — for everything else the activity event
+    // is not even read, which keeps a busy turn from paying for copy it will
+    // never render. `turn/end` is excluded: it retires rather than reports.
+    if (phase !== undefined && !isProgress) {
+      if (entry.view !== undefined && (entry.view.total > 0 || entry.view.goal !== undefined)) return
+      const summary = readActivity(readActivityPayload(event, phase))
+      if (summary === undefined) return
+      adoptSummary(key, entry, summary)
       return
     }
 
@@ -217,7 +282,12 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
       // next turn starts, no todo event ever arrives, and no bubble ever comes
       // back. Retiring the bubble without forgetting the work lets the next
       // `turn/start` re-publish from the view we already hold.
-      if (entry.view === undefined) {
+      //
+      // A summary has no such claim on the slot: it describes a moment, and the
+      // moment has passed. So it is forgotten outright — a later turn starts
+      // from a fresh read of that turn's own activity rather than replaying what
+      // the previous one was doing when it ended.
+      if (entry.view === undefined || entry.view.total === 0) {
         sessions.delete(key)
       } else {
         // Keep the bubble too: it is the payload `turn/start` replays, and
@@ -244,6 +314,30 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
     displaySession = key
     if (bubble !== undefined) publish(bubble)
   }))
+
+  /**
+   * Record an activity summary for a session that has no todo list and no goal,
+   * and publish it if it is worth showing.
+   *
+   * A summary only ever stands in for progress, so this refuses to overwrite a
+   * view that has a todo list or a goal — the caller already checks, but the
+   * invariant is re-asserted here so a future caller cannot reintroduce the bug.
+   */
+  const adoptSummary = (key: string, entry: SessionProgress, summary: ActivitySummary): void => {
+    const view: ProgressView = {
+      ...(entry.view ?? { total: 0, completed: 0, pending: 0, inProgress: 0, percent: 0 }),
+      activity: summary,
+    }
+    const bubble = renderBubble(view)
+    sessions.set(key, { view, ...(bubble === undefined ? {} : { bubble }), at: Date.now() })
+    trim()
+    // The view is always adopted — it is what the panel prints and what a later
+    // text-bearing event builds on — but a quiet phase does not get to claim the
+    // announcement slot. The model's own words always do.
+    if (!isPublishable(summary)) return
+    displaySession = key
+    if (bubble !== undefined) publish(bubble)
+  }
 
   disposers.push(ctx.on('session/disposed', (session: SessionLike) => {
     const key = String(session.id)
@@ -285,10 +379,27 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
 }
 
 /**
- * Print the full progress of the displayed session. The bubble can only carry
- * one line, so the panel button is the place the detail lives; it goes to the
- * host log, which is where a user debugging a long run is already looking.
+ * Shape an activity event's payload for {@link readActivity}, supplying the
+ * phase the event type implies.
+ *
+ * The phase is NOT on the payload: it is a fact of the event TYPE, and the pet's
+ * own projection derives it the same way. Passing it in through the payload keeps
+ * `readActivity` a pure function of its input (so it stays testable without the
+ * event-type table) and keeps this mapping in the one place that already knows
+ * the event types.
  */
+function readActivityPayload(event: { type: string; data?: unknown }, phase: ActivityPhase): unknown {
+  const data = typeof event.data === 'object' && event.data !== null
+    ? event.data as Record<string, unknown>
+    : {}
+  // A tool call names its tool inline; everything else only needs the phase.
+  const name = event.type === 'tool/call' && typeof data.name === 'string' ? data.name : undefined
+  return {
+    ...data,
+    phase,
+    ...(name === undefined ? {} : { name }),
+  }
+}
 function printProgress(sessions: Map<string, SessionProgress>, displaySession: string | undefined): void {
   if (displaySession === undefined) {
     console.log('[pet-progress] 当前没有进行中的任务')
@@ -308,5 +419,16 @@ function printProgress(sessions: Map<string, SessionProgress>, displaySession: s
   if (view.total > 0) {
     console.log(`[pet-progress] 任务 ${view.completed}/${view.total} 完成`)
     console.log(`[pet-progress] 进度: ${entry.bubble?.title ?? ''}`)
+  }
+  // With neither a todo list nor a goal there is no measurement to print, only
+  // the summary — and saying THAT is more useful than printing nothing, because
+  // "no list was written" is exactly the case a user is trying to diagnose.
+  if (view.total === 0 && view.goal === undefined) {
+    if (view.activity === undefined) {
+      console.log('[pet-progress] 当前没有进行中的任务')
+      return
+    }
+    const from = view.activity.source === 'text' ? '模型最近输出' : '当前活动'
+    console.log(`[pet-progress] 无任务列表；${from}: ${view.activity.line}`)
   }
 }

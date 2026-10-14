@@ -141,12 +141,19 @@ describe('pet-progress host half', () => {
       assert.equal(back.note, '1/2')
     })
 
-    it('does not invent a bubble for a session that never had progress', () => {
+    it('reports the turn itself for a session that never had progress', () => {
       const { ctx } = makeCtx()
       const { pet, announcements } = makePet()
       apply({ ...ctx, pet } as never, {})
+      // No todo list and no goal: `turn/start` cannot resurrect anything, but it
+      // IS an activity event, so the summary fallback reports the new turn. That
+      // is the whole point of the fallback — the user sees '等待模型响应' instead
+      // of an empty slot while the agent works without a todo list.
       ctx.emit('session/event', session('s1'), { type: 'turn/start', data: { turn: 1 } })
-      assert.equal(announcements.length, 0)
+      assert.equal(announcements.length, 1)
+      assert.equal(announcements[0]!.title, '等待模型响应')
+      assert.equal(announcements[0]!.note, '当前过程')
+      assert.equal(announcements[0]!.percent, undefined, 'a summary is not a measurement')
     })
 
     it('keeps working after many turn boundaries', () => {
@@ -193,15 +200,112 @@ describe('pet-progress host half', () => {
     assert.ok(typeof a.ttlMs === 'number' && (a.ttlMs as number) > 0)
   })
 
-  it('ignores events that carry no progress', () => {
+  it('adopts an activity summary only for a session with nothing to measure', () => {
+    const { ctx } = makeCtx()
+    const { pet, announcements } = makePet()
+    apply({ ...ctx, pet } as never, {})
+
+    // No todo list and no goal: the summary IS the bubble.
+    ctx.emit('session/event', session('s1'), { type: 'tool/call', data: { name: 'bash' } })
+    assert.equal(announcements.length, 1)
+    assert.equal(announcements[0]!.title, '正在调用 bash')
+    assert.equal(announcements[0]!.percent, undefined)
+    assert.equal(announcements[0]!.note, '当前过程')
+
+    // The model's own words are the best summary there is, and they carry the
+    // '最近输出' note so a reader knows they are quoted rather than derived.
+    ctx.emit('session/event', session('s1'), {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '正在核对构建产物是否与源码一致' }] } },
+    })
+    assert.equal(announcements.length, 2)
+    assert.equal(announcements[1]!.title, '正在核对构建产物是否与源码一致')
+    assert.equal(announcements[1]!.note, '最近输出')
+
+    // A real todo list supersedes the summary: from here on the summary is
+    // never read again, even though activity events keep arriving.
+    ctx.emit('session/event', session('s1'), {
+      type: 'todo/write',
+      data: { todos: [{ content: '写测试', status: 'in_progress' }] },
+    })
+    assert.equal(announcements.length, 3)
+    assert.equal(announcements[2]!.title, '写测试')
+    assert.equal(announcements[2]!.percent, 0)
+
+    ctx.emit('session/event', session('s1'), { type: 'tool/call', data: { name: 'bash' } })
+    assert.equal(announcements.length, 3, 'a measured session ignores the summary fallback')
+  })
+
+  it('keeps the summary when a goal clear leaves nothing else to show', () => {
+    const { ctx } = makeCtx()
+    const { pet, announcements } = makePet()
+    apply({ ...ctx, pet } as never, {})
+
+    ctx.emit('session/event', session('s1'), { type: 'step/start', data: {} })
+    const before = announcements.length
+    assert.ok(before > 0)
+    // `goal/change` with no goal is a no-op for a goal that was never created,
+    // so the summary is all this session has and it must survive the event.
+    ctx.emit('session/event', session('s1'), { type: 'goal/change', data: { operation: 'clear' } })
+    assert.equal(announcements.length, before)
+  })
+
+  it('does not resurrect a summary after the turn that produced it ends', () => {
     const { ctx } = makeCtx()
     const { pet, announcements } = makePet()
     apply({ ...ctx, pet } as never, {})
 
     ctx.emit('session/event', session('s1'), { type: 'tool/call', data: { name: 'bash' } })
-    ctx.emit('session/event', session('s1'), { type: 'turn/start', data: { turn: 1 } })
-    ctx.emit('session/event', session('s1'), { type: 'assistant/message', data: {} })
+    assert.equal(announcements.length, 1)
+
+    // `turn/end` retires the bubble. A summary claims no slot, so the entry is
+    // dropped outright. `turn/start` then reports the NEW turn rather than
+    // replaying the old summary — that is the distinction from the todo case
+    // above, where the remembered view IS replayed.
+    ctx.emit('session/event', session('s1'), { type: 'turn/end', data: {} })
+    ctx.emit('session/event', session('s1'), { type: 'turn/start', data: { turn: 2 } })
+    assert.equal(announcements.length, 2)
+    assert.equal(announcements[1]!.title, '等待模型响应', 'the new turn, not the stale summary')
+
+    // The stale summary is gone for good: a later `tool/result` reports the
+    // phase it actually is rather than falling back to what the old turn did.
+    ctx.emit('session/event', session('s1'), { type: 'tool/result', data: {} })
+    ctx.emit('session/event', session('s1'), { type: 'step/start', data: {} })
+    assert.equal(announcements.length, 3)
+    assert.equal(announcements[2]!.title, '等待模型响应')
+  })
+
+  it('reports only phases it has copy for', () => {
+    const { ctx } = makeCtx()
+    const { pet, announcements } = makePet()
+    apply({ ...ctx, pet } as never, {})
+
+    // `tool/call` with no tool name carries no line: the phase's own copy is
+    // the generic '正在调用工具' and a nameless call is not worth that.
+    ctx.emit('session/event', session('s1'), { type: 'tool/call', data: {} })
     assert.equal(announcements.length, 0)
+
+    // `waiting` and `tool` name something concrete, so they publish.
+    ctx.emit('session/event', session('s1'), { type: 'step/start', data: {} })
+    assert.equal(announcements.length, 1)
+    assert.equal(announcements[0]!.title, '等待模型响应')
+
+    // `thinking` and `review` are internal states: recorded on the view (the
+    // panel prints them) but never published, so the bubble does not flicker
+    // between the model's words and boilerplate between tool calls.
+    ctx.emit('session/event', session('s1'), { type: 'tool/result', data: {} })
+    ctx.emit('session/event', session('s1'), { type: 'assistant/message', data: {} })
+    assert.equal(announcements.length, 1)
+  })
+
+  it('names the tool a phase-only summary is calling', () => {
+    const { ctx } = makeCtx()
+    const { pet, announcements } = makePet()
+    apply({ ...ctx, pet } as never, {})
+
+    ctx.emit('session/event', session('s1'), { type: 'tool/call', data: { name: 'read' } })
+    assert.equal(announcements.length, 1)
+    assert.equal(announcements[0]!.title, '正在调用 read')
   })
 
   it('never throws into the pet event path on a malformed payload', () => {
@@ -214,6 +318,12 @@ describe('pet-progress host half', () => {
     }
     for (const bad of [undefined, null, {}, { operation: 'clear' }, { operation: 'create', goal: {} }]) {
       ctx.emit('session/event', session('s1'), { type: 'goal/change', data: bad })
+    }
+    // An activity event with nothing readable in it must not throw. The first
+    // event here DOES announce (the summary fallback), so the later malformed
+    // ones are the ones under test: they must leave the count alone.
+    for (const bad of [undefined, null, 42, 'x', {}, { message: { content: [] } }]) {
+      ctx.emit('session/event', session('s1'), { type: 'assistant/message', data: bad })
     }
     assert.equal(announcements.length, 0)
   })
