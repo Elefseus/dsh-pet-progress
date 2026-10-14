@@ -1,5 +1,7 @@
 # Design notes
 
+**English** · [中文说明](DESIGN.zh.md)
+
 Why `dsh-pet-progress` is built the way it is. The [README](../README.md) is for
 using the plugin; this file is for changing it.
 
@@ -42,8 +44,10 @@ extension points the pet already publishes:
 | `ctx.pet.announce(…)` | Publishing the progress bubble into the pet's existing announcement stack |
 | `ctx.pet.registerPanelAction(…)` | A `进度` button that prints the full todo list, since the bubble is one line |
 
-The bubble is published with `kind: 'plan'`, which reuses the pet's existing
-percent-bar rendering. No client bundle is needed — this plugin is host-only.
+A measured bubble is published with `kind: 'plan'`, which reuses the pet's
+existing percent-bar rendering; the numberless summary rides `cost` instead (see
+[When there is nothing to measure](#when-there-is-nothing-to-measure)). No client
+bundle is needed — this plugin is host-only.
 
 Both contracts are process-local and bounded by the pet itself, so a bug in this
 plugin degrades to a silent bubble rather than pet breakage. Nothing here writes
