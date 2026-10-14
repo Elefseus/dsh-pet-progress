@@ -12,8 +12,6 @@
 折算成百分比气泡显示在宠物上。如果一个会话压根没写过 todo 列表，也不会
 空着——这时气泡退回成一行纯文字，说明当下正在做什么。
 
-![宠物显示 3/7 · 43%，并标注当前任务](docs/images/hero.png)
-
 ## 安装
 
 一条命令，用插件的完整 GitHub 地址：
@@ -32,7 +30,7 @@ agent 写下 todo 列表或开始一个目标时，气泡自己就会出现，�
 
 ## 你会看到什么
 
-宠物上方冒出一个小气泡，大约每秒刷新一次：
+宠物上方冒出一个小气泡，todo 列表或目标一变就更新：
 
 | 情况 | 气泡内容 |
 | --- | --- |
@@ -103,7 +101,7 @@ apply(ctx, { enabled?: boolean, heartbeatMs?: number })
 
 ```bash
 node build.mjs              # 从 src/ 重新构建 lib/
-node --test src/*.test.ts   # 52 个测试，只用 node:test
+node --test src/*.test.ts   # 55 个测试，只用 node:test
 ```
 
 要改代码就别装，直接把 profile 指向你的工作副本：

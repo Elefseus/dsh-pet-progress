@@ -14,8 +14,6 @@ writes to the session, and folds them into a percentage bubble on the pet.
 A session that never writes a todo list isn't left blank either — there the
 bubble falls back to a plain line saying what is happening right now.
 
-![The pet showing 3/7 · 43% with the current task named](docs/images/hero.png)
-
 ## Install
 
 One command, using the plugin's full GitHub URL:
@@ -36,7 +34,7 @@ For a named profile, use `dsh plugin --profile <name> add …`.
 
 ## What you'll see
 
-A small bubble above the pet, refreshed about once a second:
+A small bubble above the pet, updated whenever the todo list or the goal changes:
 
 | Situation | Bubble |
 | --- | --- |
@@ -114,7 +112,7 @@ cordis loader does no transpilation. **After editing `src/`, rebuild and commit
 
 ```bash
 node build.mjs              # rebuild lib/ from src/
-node --test src/*.test.ts   # 52 tests, node:test only
+node --test src/*.test.ts   # 55 tests, node:test only
 ```
 
 To work on the code, skip installing and point the profile at your checkout:
