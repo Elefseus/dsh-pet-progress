@@ -1,5 +1,7 @@
 # dsh-pet-progress
 
+**中文** · [English](README.md)
+
 **给你的桌面宠物加一个进度条。**
 
 [dsh 网页宠物](https://github.com/zhu1090093659/dsh-pet) 只会告诉你 agent
@@ -129,6 +131,5 @@ dsh plugin --profile desktop add "<repo>#<tag>"           # 改用某个 tag（�
 - [设计说明](docs/DESIGN.md)——为什么是这样做的：它填补的事件缺口、为什么是
   兄弟插件而不是打补丁、它汇报什么，以及两个不明显的坑（延迟挂载、公告槽位
   没有撤回）。
-- [English README](README.md)
 
 MIT

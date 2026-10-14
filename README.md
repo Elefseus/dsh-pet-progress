@@ -1,5 +1,7 @@
 # dsh-pet-progress
 
+**English** · [中文说明](README.zh.md)
+
 **A progress bar for your desktop pet.**
 
 The [dsh web pet](https://github.com/zhu1090093659/dsh-pet) shows what the agent
@@ -143,6 +145,5 @@ dsh plugin --profile desktop add "<repo>#<tag>"           # pin a tag instead (r
   gap it fills, why it's a sibling rather than a patch, what it reports, and the
   two non-obvious details (deferred mounting, and an announcement slot with no
   retract).
-- [中文说明](README.zh.md)
 
 MIT
