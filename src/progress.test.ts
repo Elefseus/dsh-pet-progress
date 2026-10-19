@@ -14,7 +14,9 @@ import {
   foldProgressEvent,
   foldTodos,
   goalPercent,
+  hasLiveProgress,
   renderBubble,
+  ACTIVE_TODO_MAX,
   PROGRESS_AMOUNT_MAX,
   PROGRESS_TITLE_MAX,
   type ProgressView,
@@ -27,23 +29,30 @@ describe('foldTodos', () => {
   it('counts each status and derives the percentage', () => {
     const view = foldTodos(todos('completed', 'completed', 'in_progress', 'pending'))
     assert.deepEqual(view, {
-      total: 4, completed: 2, inProgress: 1, pending: 1, percent: 50, activeTodo: '任务 3',
+      total: 4, completed: 2, inProgress: 1, pending: 1, percent: 50, activeTodos: ['任务 3'],
     })
   })
 
-  it('names the active todo when exactly one is in progress', () => {
+  it('names the in-progress todo', () => {
     const view = foldTodos(todos('completed', 'in_progress'))
-    assert.equal(view?.activeTodo, '任务 2')
+    assert.deepEqual(view?.activeTodos, ['任务 2'])
   })
 
-  it('names no active todo when several are in progress', () => {
-    // Guessing which of two parallel tasks to name would be a lie; the bar
-    // still reports the count.
-    const view = foldTodos(todos('in_progress', 'in_progress'))
-    assert.equal(view?.activeTodo, undefined)
-    assert.equal(view?.total, 2)
+  it('names every in-progress todo when several are running at once', () => {
+    // Parallel work is exactly when the user needs to know WHICH tasks are
+    // running; refusing to name any of them left the bubble saying the generic
+    // '进行中的任务' and the popup could not be told apart from any other work.
+    const view = foldTodos(todos('in_progress', 'in_progress', 'pending'))
+    assert.deepEqual(view?.activeTodos, ['任务 1', '任务 2'])
+    assert.equal(view?.total, 3)
     assert.equal(view?.inProgress, 2)
     assert.equal(view?.percent, 0)
+  })
+
+  it('caps how many in-progress names it keeps', () => {
+    const view = foldTodos(todos('in_progress', 'in_progress', 'in_progress', 'in_progress'))
+    assert.equal(view?.activeTodos?.length, ACTIVE_TODO_MAX)
+    assert.equal(view?.inProgress, 4, 'the count is what +N is derived from')
   })
 
   it('refuses an empty or malformed list instead of blanking a standing bubble', () => {
@@ -184,11 +193,51 @@ describe('renderBubble', () => {
     assert.equal(bubble.tone, 'warn')
   })
 
-  it('announces completion in green', () => {
+  it('announces completion in green, as a moment', () => {
     const bubble = renderBubble(foldTodos(todos('completed', 'completed'))!)!
     assert.equal(bubble.percent, 100)
     assert.equal(bubble.note, '2/2')
     assert.equal(bubble.tone, 'ok')
+    // `moment` is what stops the host refreshing it forever: without it the
+    // heartbeat renewed "任务全部完成" until the session ended.
+    assert.equal(bubble.moment, true)
+  })
+
+  it('names every running task when several are in progress', () => {
+    const view = foldTodos(todos('completed', 'in_progress', 'in_progress', 'pending'))!
+    const bubble = renderBubble(view)!
+    assert.equal(bubble.title, '任务 2、任务 3')
+    assert.equal(bubble.note, '1/4')
+    assert.equal(bubble.moment, undefined, 'a list with work left is not a moment')
+  })
+
+  it('counts the running tasks it could not fit', () => {
+    const view = foldTodos(todos('in_progress', 'in_progress', 'in_progress', 'in_progress'))!
+    assert.equal(renderBubble(view)!.title, '任务 1、任务 2 +2')
+  })
+
+  it('prefers the current activity over a finished list', () => {
+    // Once the list is done it is history; what the session is doing now is the
+    // only thing left worth reporting.
+    const view: ProgressView = {
+      ...foldTodos(todos('completed', 'completed'))!,
+      activity: { line: '正在跑测试', source: 'phase', phase: 'tool' },
+    }
+    const bubble = renderBubble(view)!
+    assert.equal(bubble.title, '当前过程')
+    assert.equal(bubble.amount, '正在跑测试')
+    assert.equal(bubble.moment, undefined)
+  })
+
+  it('lets a goal still moving outrank a finished list', () => {
+    const view: ProgressView = {
+      ...foldTodos(todos('completed', 'completed'))!,
+      goal: { objective: '发布 v2', phase: 'active', maxGoalRounds: 8, roundsStarted: 4 },
+    }
+    const bubble = renderBubble(view)!
+    assert.equal(bubble.title, '发布 v2')
+    assert.equal(bubble.percent, 50)
+    assert.equal(bubble.moment, undefined)
   })
 
   it('lets a blocked goal outrank a healthy todo list and says why', () => {
@@ -243,6 +292,30 @@ describe('renderBubble', () => {
   it('says nothing when there is nothing to report', () => {
     assert.equal(renderBubble(undefined), undefined)
     assert.equal(renderBubble({ total: 0, completed: 0, pending: 0, inProgress: 0, percent: 0 }), undefined)
+  })
+})
+
+describe('hasLiveProgress', () => {
+  it('is false for a finished list and a completed goal', () => {
+    assert.equal(hasLiveProgress(undefined), false)
+    assert.equal(hasLiveProgress(foldTodos(todos('completed', 'completed'))!), false)
+    assert.equal(hasLiveProgress({
+      total: 0, completed: 0, pending: 0, inProgress: 0, percent: 100,
+      goal: { objective: 'g', phase: 'complete', maxGoalRounds: 2, roundsStarted: 2 },
+    }), false)
+  })
+
+  it('is true while a list or a goal still has work in it', () => {
+    assert.equal(hasLiveProgress(foldTodos(todos('completed', 'pending'))!), true)
+    assert.equal(hasLiveProgress({
+      total: 0, completed: 0, pending: 0, inProgress: 0, percent: 50,
+      goal: { objective: 'g', phase: 'active', maxGoalRounds: 4, roundsStarted: 2 },
+    }), true)
+    // A blocked goal is still live: it is waiting on the user, not finished.
+    assert.equal(hasLiveProgress({
+      total: 2, completed: 2, pending: 0, inProgress: 0, percent: 100,
+      goal: { objective: 'g', phase: 'blocked', maxGoalRounds: 4, roundsStarted: 2 },
+    }), true)
   })
 })
 

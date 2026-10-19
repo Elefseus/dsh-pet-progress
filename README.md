@@ -39,14 +39,17 @@ A small bubble above the pet, updated whenever the todo list or the goal changes
 | Situation | Bubble |
 | --- | --- |
 | Todo list, one task in progress | `3/7 · 43%` titled with that task |
-| Todo list, several tasks in progress | `3/7 · 43%`, naming none |
+| Todo list, several tasks in progress | `3/7 · 43%`, naming them — up to three, `+N` for the rest |
+| All todos done | `任务全部完成` in green — a moment, gone after about 10 seconds |
 | Long-lived goal with no todos | `2/8 轮` — the goal's round budget |
+| Goal finished | `目标完成` in green — also a moment |
 | Goal blocked | The block reason, in place of progress |
 | No todo list and no goal | A plain line with no percentage — `等待模型响应`, `正在调用工具`, or the model's own words, led by `当前过程` or `最近输出` |
 
-The bubble fades out about 30 seconds after the last progress update, so a
-finished turn doesn't leave a stale percentage on screen. It comes back by itself
-if the work resumes.
+A standing bubble fades out about 30 seconds after the last progress update, so a
+finished turn doesn't leave a stale percentage on screen; it comes back by itself
+if the work resumes. A **moment** — a finished list or a finished goal — is
+announced once and never renewed, so it clears itself instead of sitting there.
 
 Several sessions can be open at once — the most recently active one owns the
 bubble.
@@ -61,9 +64,9 @@ pet panel and the complete todo list is written to the dsh log.
 - **It never over-reports.** A todo whose status the plugin doesn't recognise
   counts as *not done*. If every entry in a write is unreadable, the plugin
   treats it as "no information" and keeps what it had.
-- **It won't guess.** If several tasks are in progress at once, the bubble shows
-  the count and names none — naming the wrong task would be worse than naming
-  nothing.
+- **It won't guess.** It names the tasks that are actually in progress — up to
+  three, each trimmed to 32 characters, with `+N` when more are running. It never
+  picks one of several and pretends that one is the work.
 - **It reads, it doesn't judge.** A percentage comes from the todo lists and
   goals your agent writes; the plugin never infers progress from how long
   something has been running. Without either, it shows the plain activity line

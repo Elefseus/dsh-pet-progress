@@ -60,7 +60,9 @@ Priority order, highest first:
 1. **A blocked goal outranks everything** and shows the human-readable reason —
    a blocked task is the one thing worth interrupting for.
 2. **A todo list** shows a percentage bar plus `completed/total`, titled with
-   the task currently `in_progress`.
+   the task currently `in_progress` — or, when several are running, naming them
+   all (up to three, then `+N`), because "which of these is the work" is exactly
+   the question a multi-task list raises.
 3. **A goal with no todos** falls back to its round budget, e.g. `2/8 轮`.
 4. **With neither a todo list nor a goal**, a plain activity line — no
    percentage. See the next section.
@@ -72,9 +74,10 @@ Two deliberate rules about trustworthiness:
   that is not `completed` or `in_progress` as `pending`), and a list whose
   entries are all malformed is treated as *no information* rather than as
   *nothing to do*. An empty write does not blank an existing bubble.
-- **A task is named only when the naming is unambiguous.** If several todos are
-  `in_progress` at once, the bubble shows the count and names none, because a
-  progress report that names the wrong task is worse than one that names none.
+- **A task is named only when the naming is unambiguous.** Several running tasks
+  are named individually rather than resolved to one, so the bubble never picks
+  a task and presents it as *the* task. Beyond three names it stops naming and
+  counts (`+2`), because a title that has to scroll is not a status line.
 
 The bubble expires after 30 s (`PROGRESS_TTL_MS`) and is refreshed on a
 heartbeat, so it survives quiet stretches instead of vanishing the moment the
@@ -138,7 +141,36 @@ Retirement stops at the bubble, deliberately. `todo/write` is emitted only when
 the todo list **changes**, so a new turn that leaves the list alone emits nothing
 at all; if retiring also discarded the folded view, the plugin would go
 permanently mute for that session after its first turn end. The view is therefore
-kept, and the next `turn/start` re-publishes from it.
+kept — unless it has nothing live left in it, see below — and the next
+`turn/start` re-publishes from it.
+
+### A finished list is a moment, not a standing bubble
+
+"Pinned at `任务全部完成` forever" is the failure this rule exists to prevent. The
+re-publish-on-`turn/start` rule above is right for work that is still going and
+wrong for work that is over: a list with `completed === total` is a finished
+thing, and replaying it on every later turn makes a *completed* state look like
+a *current* one — on screen, permanently.
+
+So the renderer distinguishes two bubble lifetimes:
+
+- a **standing** bubble (a percentage with work left, a goal still moving, a
+  live activity line) is refreshed on the heartbeat and lives until the turn
+  ends;
+- a **moment** (`任务全部完成`, `目标完成`) is announced **once** with
+  `PROGRESS_MOMENT_TTL_MS` (10 s) and is never stored as the session's standing
+  bubble, so neither the heartbeat nor the next `turn/start` can renew it.
+
+`hasLiveProgress` in `src/progress.ts` is the single predicate behind the
+distinction: it is false for a finished list and a completed goal, and true for
+a blocked goal (waiting on a human is not finished). `src/index.ts` uses it in
+three places — the `turn/start` replay guard, the activity fallback's gate, and
+the `turn/end` retirement — so all three agree about what "still has work" means.
+
+Making the moment path unreachable for a *measurement* is what lets the activity
+fallback take over afterwards: once a list is finished, the session has nothing
+left to measure, and the next event re-enters the summary path instead of
+replaying a 100% bar.
 
 ## Two non-obvious details
 

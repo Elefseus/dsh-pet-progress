@@ -37,8 +37,10 @@ import type {} from '@linxin666/dsh-pet'
 import {
   announcePayload,
   foldProgressEvent,
+  hasLiveProgress,
   readActivity,
   renderBubble,
+  PROGRESS_MOMENT_TTL_MS,
   PROGRESS_SOURCE,
   PROGRESS_TTL_MS,
   type ActivitySummary,
@@ -196,13 +198,13 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
   let warned = false
 
   /** Publish one bubble into this plugin's announcement slot. */
-  const publish = (bubble: ProgressBubble | undefined): void => {
+  const publish = (bubble: ProgressBubble | undefined, ttlMs = Math.max(PROGRESS_TTL_MS, heartbeatMs * 3)): void => {
     if (bubble === undefined) return
     // The wire shape is derived in one place (see `announcePayload`): a bubble
     // the pet's validator cannot accept is dropped without a word, so the
     // rejection is surfaced once instead of looking like a plugin with nothing
     // to say.
-    const result = pet.announce(announcePayload(bubble, Math.max(PROGRESS_TTL_MS, heartbeatMs * 3)))
+    const result = pet.announce(announcePayload(bubble, ttlMs))
     if (!warned && isRejected(result)) {
       warned = true
       console.warn('[pet-progress] the pet rejected the announcement; no bubble will render')
@@ -257,8 +259,7 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
     // so a session with nothing to measure must go on and report the new turn
     // rather than stopping here. Only a session that actually has a bubble to
     // replay resumes and returns.
-    if (event.type === 'turn/start' && entry.view !== undefined && entry.bubble !== undefined
-      && (entry.view.total > 0 || entry.view.goal !== undefined)) {
+    if (event.type === 'turn/start' && entry.bubble !== undefined && hasLiveProgress(entry.view)) {
       displaySession = key
       publish(entry.bubble)
       return
@@ -269,7 +270,7 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
     // is not even read, which keeps a busy turn from paying for copy it will
     // never render. `turn/end` is excluded: it retires rather than reports.
     if (phase !== undefined && !isProgress) {
-      if (entry.view !== undefined && (entry.view.total > 0 || entry.view.goal !== undefined)) return
+      if (hasLiveProgress(entry.view)) return
       const summary = readActivity(readActivityPayload(event, phase))
       if (summary === undefined) return
       adoptSummary(key, entry, summary)
@@ -287,19 +288,21 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
       // heartbeat. Re-publishing even once would restart the TTL and strand a
       // finished turn's percentage on screen.
       //
-      // The VIEW is kept, though, and that distinction is the whole point. A
-      // `todo/write` is only emitted when the todo list CHANGES, so a new turn
-      // that leaves the list alone re-emits nothing. Deleting the whole entry
-      // here would therefore mute the plugin for the rest of the session: the
-      // next turn starts, no todo event ever arrives, and no bubble ever comes
-      // back. Retiring the bubble without forgetting the work lets the next
-      // `turn/start` re-publish from the view we already hold.
+      // The VIEW is kept only while it still describes moving work, and that
+      // distinction is the whole point. A `todo/write` is only emitted when the
+      // todo list CHANGES, so a new turn that leaves the list alone re-emits
+      // nothing. Deleting a live entry would therefore mute the plugin for the
+      // rest of the session: the next turn starts, no todo event ever arrives,
+      // and no bubble ever comes back. Retiring the bubble without forgetting
+      // the work lets the next `turn/start` re-publish from the view we hold.
       //
-      // A summary has no such claim on the slot: it describes a moment, and the
-      // moment has passed. So it is forgotten outright — a later turn starts
-      // from a fresh read of that turn's own activity rather than replaying what
-      // the previous one was doing when it ended.
-      if (entry.view === undefined || entry.view.total === 0) {
+      // A FINISHED view has no such claim, and keeping it was the bug behind a
+      // bubble that showed 任务全部完成 forever: every later turn replayed the
+      // finished list instead of reporting what the session was doing, and the
+      // activity fallback was blocked by a list nothing was left in. So a
+      // finished list — and any summary standing next to it — is forgotten here,
+      // and the next turn starts from its own events.
+      if (!hasLiveProgress(entry.view)) {
         sessions.delete(key)
       } else {
         // Keep the bubble too: it is the payload `turn/start` replays, and
@@ -316,7 +319,12 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
 
     const view = fold.view
     const bubble = renderBubble(view)
-    sessions.set(key, { view, ...(bubble === undefined ? {} : { bubble }), at: Date.now() })
+    // A MOMENT (the list just finished, the goal just completed) is announced
+    // once and then forgotten. Keeping its bubble would let the heartbeat renew
+    // it forever, which is exactly how "任务全部完成" came to sit on screen until
+    // the session ended; instead it is published with a short TTL and expires.
+    const moment = bubble !== undefined && bubble.moment === true
+    sessions.set(key, { view, ...(bubble === undefined || moment ? {} : { bubble }), at: Date.now() })
     trim()
 
     // The most recent progress event owns the single announcement slot: the
@@ -324,7 +332,7 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
     // is a finite column. It is not cleared by an unrelated session going
     // quiet, only by a progress-bearing event from another session.
     displaySession = key
-    if (bubble !== undefined) publish(bubble)
+    if (bubble !== undefined) publish(bubble, moment ? PROGRESS_MOMENT_TTL_MS : undefined)
   }))
 
   /**
@@ -341,12 +349,21 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
       activity: summary,
     }
     const bubble = renderBubble(view)
-    sessions.set(key, { view, ...(bubble === undefined ? {} : { bubble }), at: Date.now() })
-    trim()
+    const publishable = isPublishable(summary)
     // The view is always adopted — it is what the panel prints and what a later
-    // text-bearing event builds on — but a quiet phase does not get to claim the
-    // announcement slot. The model's own words always do.
-    if (!isPublishable(summary)) return
+    // text-bearing event builds on — but a QUIET phase neither claims the
+    // announcement slot nor replaces what is in it. The heartbeat re-publishes
+    // whatever bubble is stored here, so storing '正在思考' would silently
+    // overwrite the model's own last words a few seconds after they appeared.
+    sessions.set(key, {
+      view,
+      ...(publishable
+        ? (bubble === undefined ? {} : { bubble })
+        : (entry.bubble === undefined ? {} : { bubble: entry.bubble })),
+      at: Date.now(),
+    })
+    trim()
+    if (!publishable) return
     displaySession = key
     if (bubble !== undefined) publish(bubble)
   }

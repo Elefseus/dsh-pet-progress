@@ -13,6 +13,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, PROGRESS_SOURCE, PROGRESS_ACTION_ID } from './index.ts'
+import { PROGRESS_MOMENT_TTL_MS } from './progress.ts'
 
 /** A fake cordis context recording everything the plugin registers. */
 function makeCtx() {
@@ -82,6 +83,27 @@ function assertAnnounceable(a: Record<string, unknown>): void {
 }
 
 const session = (id: string) => ({ id })
+
+/**
+ * Run `body` with the heartbeat captured instead of scheduled, so the timer can
+ * be fired deterministically rather than waiting out a real 10 s interval.
+ */
+function withHeartbeat(body: (fire: () => void) => void): void {
+  const timers: Array<() => void> = []
+  const realSetInterval = globalThis.setInterval
+  const realClearInterval = globalThis.clearInterval
+  ;(globalThis as { setInterval: unknown }).setInterval = ((fn: () => void) => {
+    timers.push(fn)
+    return { unref() {} }
+  }) as never
+  ;(globalThis as { clearInterval: unknown }).clearInterval = (() => {}) as never
+  try {
+    body(() => { for (const fn of timers) fn() })
+  } finally {
+    ;(globalThis as { setInterval: unknown }).setInterval = realSetInterval
+    ;(globalThis as { clearInterval: unknown }).clearInterval = realClearInterval
+  }
+}
 
 describe('pet-progress host half', () => {
   it('subscribes to session events and registers one panel action', () => {
@@ -454,6 +476,86 @@ describe('pet-progress host half', () => {
     // A later heartbeat must not resurrect the disposed session's bubble: it is
     // gone from the table, so there is nothing to re-publish.
     assert.equal(announcements.length, 1)
+  })
+
+  // Regression: a finished list used to stay on screen until the session ended.
+  // The completion bubble was a normal standing bubble, so the heartbeat renewed
+  // it every 10 s, and the next turn replayed the same finished list on top. A
+  // finished list is a MOMENT: announce it once with the short TTL and forget it.
+  it('lets a finished list fade instead of pinning it to the pet', () => {
+    withHeartbeat(fire => {
+      const { ctx } = makeCtx()
+      const { pet, announcements } = makePet()
+      apply({ ...ctx, pet } as never, {})
+
+      ctx.emit('session/event', session('s1'), {
+        type: 'todo/write',
+        data: { todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'completed' }] },
+      })
+      assert.equal(announcements.length, 1)
+      assert.equal(announcements[0]!.title, '任务全部完成')
+      assert.equal(announcements[0]!.ttlMs, PROGRESS_MOMENT_TTL_MS, 'a moment gets the short TTL')
+
+      const before = announcements.length
+      fire()
+      assert.equal(announcements.length, before, 'the heartbeat must not renew a moment')
+
+      // The next turn must report itself, not replay the finished list.
+      ctx.emit('session/event', session('s1'), { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+      ctx.emit('session/event', session('s1'), { type: 'turn/start', data: { turn: 2 } })
+      const last = announcements.at(-1)!
+      assert.equal(last.title, '当前过程', 'a new turn reports itself instead of the finished list')
+      assert.equal(last.amount, '等待模型响应')
+    })
+  })
+
+  it('reports the current activity once the list finishes', () => {
+    const { ctx } = makeCtx()
+    const { pet, announcements } = makePet()
+    apply({ ...ctx, pet } as never, {})
+
+    ctx.emit('session/event', session('s1'), {
+      type: 'todo/write',
+      data: { todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }] },
+    })
+    assert.equal(announcements.at(-1)!.title, 'b')
+
+    // Completion is the moment...
+    ctx.emit('session/event', session('s1'), {
+      type: 'todo/write',
+      data: { todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'completed' }] },
+    })
+    assert.equal(announcements.at(-1)!.title, '任务全部完成')
+
+    // ...and after it the summary takes over again, which used to be impossible
+    // because the finished view kept claiming to be a measurement.
+    ctx.emit('session/event', session('s1'), { type: 'tool/call', data: { name: 'bash' } })
+    const last = announcements.at(-1)!
+    assert.equal(last.title, '当前过程')
+    assert.equal(last.amount, '正在调用 bash')
+  })
+
+  it('does not let a quiet phase overwrite the standing bubble', () => {
+    withHeartbeat(fire => {
+      const { ctx } = makeCtx()
+      const { pet, announcements } = makePet()
+      apply({ ...ctx, pet } as never, {})
+
+      ctx.emit('session/event', session('s1'), {
+        type: 'assistant/message',
+        data: { message: { content: [{ type: 'text', text: '正在核对构建产物' }] } },
+      })
+      assert.equal(announcements.at(-1)!.amount, '正在核对构建产物')
+
+      // `tool/result` is a quiet phase: recorded on the view, never published.
+      const before = announcements.length
+      ctx.emit('session/event', session('s1'), { type: 'tool/result', data: {} })
+      assert.equal(announcements.length, before)
+
+      // The heartbeat re-publishes the last useful line, not the quiet phase.
+      fire()
+      assert.equal(announcements.at(-1)!.amount, '正在核对构建产物')
+    })
   })
 
   // Regression: the bubble used to survive the end of the turn. Because the
