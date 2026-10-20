@@ -102,6 +102,13 @@ interface SessionProgress {
    * delta tail, so the next delta can be appended without reparsing history.
    */
   stream?: string
+  /**
+   * Which half of the model's speech {@link stream} holds.
+   *
+   * A reasoning line and an answer line are not two halves of one sentence, so
+   * the buffer is reset when this flips rather than splicing them together.
+   */
+  streamKind?: 'text' | 'reasoning'
   /** Epoch ms of the last stream-driven publish, for throttling the bubble. */
   streamAt?: number
   /** Epoch ms of the last change, for idle expiry. */
@@ -146,7 +153,7 @@ const QUIET_PHASES: ReadonlySet<ActivityPhase> = new Set<ActivityPhase>(['thinki
  * boilerplate between every tool call.
  */
 function isPublishable(summary: ActivitySummary): boolean {
-  return summary.source === 'text' || !QUIET_PHASES.has(summary.phase)
+  return summary.source !== 'phase' || !QUIET_PHASES.has(summary.phase)
 }
 
 /** The phase vocabulary this plugin has copy for. */
@@ -283,6 +290,7 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
     // writing again, and the tail would open with the previous turn's words.
     if (event.type === 'turn/start') {
       entry.stream = undefined
+      entry.streamKind = undefined
       entry.streamAt = undefined
     }
 
@@ -383,25 +391,35 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
   disposers.push(ctx.on('agent/assistant-stream', (payload: unknown) => {
     const live = readLiveDelta(payload)
     if (live === undefined) return
-    const { key, text } = live
+    const { key, text, kind } = live
     const entry: SessionProgress = sessions.get(key) ?? { at: 0 }
     if (hasLiveProgress(entry.view)) return
 
-    const stream = ((entry.stream ?? '') + text).slice(-STREAM_BUFFER_MAX)
+    // A thought and an answer are different sentences: when the model stops
+    // reasoning and starts writing, the new delta is not a continuation of the
+    // old line, so the buffer — and the throttle window — start over instead of
+    // concatenating one into the other.
+    const continuing = entry.streamKind === kind
+    const stream = ((continuing ? entry.stream ?? '' : '') + text).slice(-STREAM_BUFFER_MAX)
     const line = liveTextLine(stream)
     if (line === undefined) return
 
     const now = Date.now()
-    const next: SessionProgress = { ...entry, stream, at: now }
+    const streamAt = continuing ? entry.streamAt : undefined
+    const next: SessionProgress = { ...entry, stream, streamKind: kind, at: now }
     sessions.set(key, next)
 
     // Two doors before the pet's slot is touched: the line must actually have
     // changed (a delta that only extends a token already on screen does not), and
     // it must be at least STREAM_PUBLISH_MS since the last stream publish.
-    if (entry.view?.activity?.line === line) return
-    if (entry.streamAt !== undefined && now - entry.streamAt < STREAM_PUBLISH_MS) return
+    if (continuing && entry.view?.activity?.line === line) return
+    if (streamAt !== undefined && now - streamAt < STREAM_PUBLISH_MS) return
     next.streamAt = now
-    adoptSummary(key, next, { line, source: 'text', phase: 'review' })
+    adoptSummary(key, next, {
+      line,
+      source: kind,
+      phase: kind === 'reasoning' ? 'thinking' : 'review',
+    })
   }))
 
   /**
@@ -432,6 +450,7 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
       // The live buffer and its publish clock belong to the turn, not to this
       // summary, so a stream-driven update survives the rewrite that publishes it.
       ...(entry.stream === undefined ? {} : { stream: entry.stream }),
+      ...(entry.streamKind === undefined ? {} : { streamKind: entry.streamKind }),
       ...(entry.streamAt === undefined ? {} : { streamAt: entry.streamAt }),
       at: Date.now(),
     })
@@ -515,7 +534,7 @@ function readActivityPayload(event: { type: string; data?: unknown }, phase: Act
  * Read structurally: the plugin never imports the agent's frame types, so a
  * shape change degrades to "no live line" rather than to a thrown listener.
  */
-function readLiveDelta(payload: unknown): { key: string; text: string } | undefined {
+function readLiveDelta(payload: unknown): { key: string; text: string; kind: 'text' | 'reasoning' } | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined
   const record = payload as Record<string, unknown>
 
@@ -533,9 +552,13 @@ function readLiveDelta(payload: unknown): { key: string; text: string } | undefi
   const chunk = f.chunk
   if (typeof chunk !== 'object' || chunk === null) return undefined
   const c = chunk as Record<string, unknown>
-  if (c.type !== 'text-delta') return undefined
+  // The two delta kinds are the model's own speech: `reasoning-delta` while it
+  // thinks, `text-delta` for the answer it writes. Everything else (tool-call
+  // deltas, a frame's start and end) says nothing this line reports.
+  const kind = c.type === 'reasoning-delta' ? 'reasoning' : c.type === 'text-delta' ? 'text' : undefined
+  if (kind === undefined) return undefined
   if (typeof c.text !== 'string' || c.text === '') return undefined
-  return { key: String(id), text: c.text }
+  return { key: String(id), text: c.text, kind }
 }
 
 function printProgress(sessions: Map<string, SessionProgress>, displaySession: string | undefined): void {

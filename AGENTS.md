@@ -7,7 +7,7 @@ Progress companion for the [dsh web pet](https://github.com/zhu1090093659/dsh-pe
 
 ```bash
 node build.mjs              # rebuild lib/ from src/ (only needed after editing src/)
-node --test src/*.test.ts    # 75 tests, no framework beyond node:test
+node --test src/*.test.ts    # 76 tests, no framework beyond node:test
 ```
 
 ## Building and testing

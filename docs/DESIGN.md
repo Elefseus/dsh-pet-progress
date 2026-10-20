@@ -91,9 +91,9 @@ list — a plain question-and-answer turn has nothing to count. Those sessions u
 to show nothing at all, leaving the pet's own phase word as the only signal.
 
 The fallback is a **plain activity line**, and it draws on three sources in
-order: the model's own output *as it is streamed* (`agent/assistant-stream`,
-`text-delta` chunks), the purpose of the tool it just called
-(`正在调用 pwsh：npm test`), and only then the pet's bare phase word
+order: the model's own speech *as it is streamed* (`agent/assistant-stream`,
+`reasoning-delta` and `text-delta` chunks), the purpose of the tool it just
+called (`正在调用 pwsh：npm test`), and only then the pet's bare phase word
 (`等待模型响应`, …). It carries **no `percent`** and does not pretend to be a
 measurement.
 
@@ -103,9 +103,14 @@ says nothing for exactly the stretch of time the user is watching. The
 publication is decoded structurally (`readLiveDelta` in `src/index.ts`) against
 the fields the plugin needs (`agent.session.id`, `frame.chunk.text`), never by
 importing the agent's frame types, so a change on that side degrades to "no live
-line" instead of a throwing listener. Reasoning deltas are skipped on purpose:
-the line is the model's *output*, and the pet's own bubble already covers
-deliberation with its phase.
+line" instead of a throwing listener.
+
+Both halves of the model's own speech are shown: `reasoning-delta` while it is
+thinking, `text-delta` once it starts writing the answer. They are different
+sentences, so the buffer — and the throttle window — resets when the kind flips
+instead of splicing a thought onto the answer that followed it, and each carries
+its own lead (`正在思考` / `最近输出`). A bare phase line is the last resort, for
+the stalls where neither has said anything yet.
 
 That line needs the one shape the announcement contract does *not* have. The pet
 validates every payload: `plan` requires a `percent`, `balance` and `cost`
@@ -149,8 +154,8 @@ buffering up to `STREAM_BUFFER_MAX` (600) characters, and only the newest
 that says what is happening *now*.
 
 
-The lead names the source: `当前过程` for a phase line, `最近输出` for the model's
-own words. The body is the line itself.
+The lead names the source: `当前过程` for a phase line, `正在思考` for the model's
+reasoning, `最近输出` for the words it is writing. The body is the line itself.
 
 ## Standing is not permanent
 

@@ -643,6 +643,37 @@ describe('pet-progress host half', () => {
     })
   })
 
+  // Reasoning streams before the answer, as its own kind of delta. The line has
+  // to name that half of the model's speech, and the buffer must not splice the
+  // thought onto the answer when the kind flips.
+  it('shows what the model is thinking, then switches to its answer', () => {
+    withClock(advance => {
+      const { ctx } = makeCtx()
+      const { pet, announcements } = makePet()
+      apply({ ...ctx, pet } as never, {})
+
+      const emit = (kind: 'reasoning-delta' | 'text-delta', text: string) =>
+        ctx.emit('agent/assistant-stream', {
+          agent: { session: session('s1') },
+          frame: { type: 'chunk', chunk: { type: kind, text } },
+        })
+
+      emit('reasoning-delta', '先确认数组边界')
+      assert.equal(announcements.at(-1)!.title, '正在思考')
+      assert.equal(announcements.at(-1)!.amount, '先确认数组边界')
+
+      advance(500)
+      emit('reasoning-delta', '再判定是否为偶数')
+      assert.equal(announcements.at(-1)!.amount, '先确认数组边界再判定是否为偶数')
+
+      // No wait: a kind flip is a new sentence, so it repaints immediately and
+      // the answer never appears glued to the thought that preceded it.
+      emit('text-delta', '改好了')
+      assert.equal(announcements.at(-1)!.title, '最近输出')
+      assert.equal(announcements.at(-1)!.amount, '改好了')
+    })
+  })
+
   it('says what a tool call is for, not only which tool', () => {
     const { ctx } = makeCtx()
     const { pet, announcements } = makePet()

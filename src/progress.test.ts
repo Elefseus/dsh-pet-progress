@@ -286,6 +286,16 @@ describe('renderBubble', () => {
     assert.equal(quoted.title, '最近输出')
     assert.equal(quoted.amount, '读完了')
 
+    // Reasoning is the other half of the model's own speech, written before the
+    // answer. It gets its own lead so the two are never confused on screen.
+    const thought = renderBubble({
+      ...view,
+      activity: { line: '先确认数组边界', source: 'reasoning', phase: 'thinking' },
+    })!
+    assert.equal(thought.title, '正在思考')
+    assert.equal(thought.amount, '先确认数组边界')
+    assert.equal(thought.percent, undefined)
+
     const long = renderBubble({
       ...view,
       activity: { line: '字'.repeat(400), source: 'text', phase: 'review' },

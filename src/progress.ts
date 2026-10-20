@@ -55,10 +55,16 @@ export type ActivityPhase = 'idle' | 'waiting' | 'thinking' | 'tool' | 'review' 
  * mirrored into it.
  */
 export interface ActivitySummary {
-  /** Latest activity line, either the model's own text or the phase's copy. */
+  /** Latest activity line: the model's reasoning, its output, or the phase copy. */
   line: string
-  /** Where {@link line} came from, which decides the note and the trust level. */
-  source: 'text' | 'phase'
+  /**
+   * Where {@link line} came from, which decides the lead and the trust level.
+   *
+   * `reasoning` and `text` are both the model's own words — one written while it
+   * thinks, one written as its answer — and both always publish. `phase` is the
+   * pet's own vocabulary standing in for either.
+   */
+  source: 'text' | 'reasoning' | 'phase'
   /**
    * The phase this line describes.
    *
@@ -747,9 +753,23 @@ export function renderBubble(view: ProgressView | undefined): ProgressBubble | u
 }
 
 /** The bubble for an activity summary: its source is the lead, the line the body. */
+/**
+ * The lead word for each summary source.
+ *
+ * The lead is the only part of a numberless bubble that explains itself, so the
+ * two halves of the model's own speech are told apart: `正在思考` while it is
+ * reasoning, `最近输出` once it starts writing the answer. A bare phase line is
+ * neither, and says so.
+ */
+const SOURCE_LEAD: Record<ActivitySummary['source'], string> = {
+  reasoning: '正在思考',
+  text: '最近输出',
+  phase: '当前过程',
+}
+
 function activityBubble(activity: ActivitySummary): ProgressBubble {
   return {
-    title: activity.source === 'text' ? '最近输出' : '当前过程',
+    title: SOURCE_LEAD[activity.source],
     amount: compactText(activity.line, PROGRESS_AMOUNT_MAX),
     tone: 'low',
   }
