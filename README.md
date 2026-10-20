@@ -1,4 +1,4 @@
-﻿# dsh-pet-progress
+# dsh-pet-progress
 
 **English** · [中文说明](README.zh.md)
 
@@ -49,7 +49,9 @@ A small bubble above the pet, updated whenever the todo list or the goal changes
 A standing bubble fades out about 30 seconds after the last progress update, so a
 finished turn doesn't leave a stale percentage on screen; it comes back by itself
 if the work resumes. A **moment** — a finished list or a finished goal — is
-announced once and never renewed, so it clears itself instead of sitting there.
+announced once and never renewed, so it clears itself instead of sitting there;
+it also keeps the bubble for those ten seconds, because the agent usually starts
+talking again immediately and would otherwise replace it before you read it.
 
 Several sessions can be open at once — the most recently active one owns the
 bubble.

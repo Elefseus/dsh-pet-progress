@@ -525,29 +525,38 @@ describe('pet-progress host half', () => {
   })
 
   it('reports the current activity once the list finishes', () => {
-    const { ctx } = makeCtx()
-    const { pet, announcements } = makePet()
-    apply({ ...ctx, pet } as never, {})
+    withClock(advance => {
+      const { ctx } = makeCtx()
+      const { pet, announcements } = makePet()
+      apply({ ...ctx, pet } as never, {})
 
-    ctx.emit('session/event', session('s1'), {
-      type: 'todo/write',
-      data: { todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }] },
+      ctx.emit('session/event', session('s1'), {
+        type: 'todo/write',
+        data: { todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'in_progress' }] },
+      })
+      assert.equal(announcements.at(-1)!.title, 'b')
+
+      // Completion is the moment...
+      ctx.emit('session/event', session('s1'), {
+        type: 'todo/write',
+        data: { todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'completed' }] },
+      })
+      assert.equal(announcements.at(-1)!.title, '任务全部完成')
+
+      // ...and a fresh moment keeps the slot. The agent keeps talking right
+      // after finishing a list, so without this the line it was announced for is
+      // replaced inside one throttle window and never seen.
+      ctx.emit('session/event', session('s1'), { type: 'tool/call', data: { name: 'bash' } })
+      assert.equal(announcements.at(-1)!.title, '任务全部完成')
+
+      // Once it has expired the summary takes over again, which used to be
+      // impossible because the finished view kept claiming to be a measurement.
+      advance(11_000)
+      ctx.emit('session/event', session('s1'), { type: 'tool/call', data: { name: 'bash' } })
+      const last = announcements.at(-1)!
+      assert.equal(last.title, '当前过程')
+      assert.equal(last.amount, '正在调用 bash')
     })
-    assert.equal(announcements.at(-1)!.title, 'b')
-
-    // Completion is the moment...
-    ctx.emit('session/event', session('s1'), {
-      type: 'todo/write',
-      data: { todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'completed' }] },
-    })
-    assert.equal(announcements.at(-1)!.title, '任务全部完成')
-
-    // ...and after it the summary takes over again, which used to be impossible
-    // because the finished view kept claiming to be a measurement.
-    ctx.emit('session/event', session('s1'), { type: 'tool/call', data: { name: 'bash' } })
-    const last = announcements.at(-1)!
-    assert.equal(last.title, '当前过程')
-    assert.equal(last.amount, '正在调用 bash')
   })
 
   it('does not let a quiet phase overwrite the standing bubble', () => {

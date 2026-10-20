@@ -111,6 +111,14 @@ interface SessionProgress {
   streamKind?: 'text' | 'reasoning'
   /** Epoch ms of the last stream-driven publish, for throttling the bubble. */
   streamAt?: number
+  /**
+   * Epoch ms a moment (a finished list or goal) was announced at.
+   *
+   * A moment claims the slot for its short TTL: an activity line arriving one
+   * throttle window later would replace it before anyone read it, and the user
+   * explicitly asked to see the list finish.
+   */
+  momentAt?: number
   /** Epoch ms of the last change, for idle expiry. */
   at: number
 }
@@ -368,7 +376,15 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
     // it forever, which is exactly how "任务全部完成" came to sit on screen until
     // the session ended; instead it is published with a short TTL and expires.
     const moment = bubble !== undefined && bubble.moment === true
-    sessions.set(key, { view, ...(bubble === undefined || moment ? {} : { bubble }), at: Date.now() })
+    sessions.set(key, {
+      view,
+      ...(bubble === undefined || moment ? {} : { bubble }),
+      // Remembered so the activity line cannot walk over it: the moment is what
+      // the user asked to see, and the next streamed token would otherwise
+      // replace it within the throttle window and it would never be visible.
+      ...(moment ? { momentAt: Date.now() } : {}),
+      at: Date.now(),
+    })
     trim()
 
     // The most recent progress event owns the single announcement slot: the
@@ -431,6 +447,11 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
    * invariant is re-asserted here so a future caller cannot reintroduce the bug.
    */
   const adoptSummary = (key: string, entry: SessionProgress, summary: ActivitySummary): void => {
+    // A moment that is still fresh owns the slot. Without this the next streamed
+    // token replaces a finished list's line within one throttle window, so the
+    // one thing the user asked to see is the one thing never on screen.
+    if (entry.momentAt !== undefined && Date.now() - entry.momentAt < PROGRESS_MOMENT_TTL_MS) return
+
     const view: ProgressView = {
       ...(entry.view ?? { total: 0, completed: 0, pending: 0, inProgress: 0, percent: 0 }),
       activity: summary,

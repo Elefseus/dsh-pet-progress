@@ -192,6 +192,14 @@ So the renderer distinguishes two bubble lifetimes:
   `PROGRESS_MOMENT_TTL_MS` (10 s) and is never stored as the session's standing
   bubble, so neither the heartbeat nor the next `turn/start` can renew it.
 
+For those ten seconds the moment keeps the slot: `momentAt` in the session entry
+makes `adoptSummary` refuse an activity line, because the agent normally keeps
+talking immediately after finishing a list and the next streamed token would
+otherwise replace the line within one throttle window — the one bubble the user
+asked for would be the one they never see. A new `todo/write` or `goal/change`
+with live progress is a measurement, not a summary, so it still takes over the
+moment the work actually resumes.
+
 `hasLiveProgress` in `src/progress.ts` is the single predicate behind the
 distinction: it is false for a finished list and a completed goal, and true for
 a blocked goal (waiting on a human is not finished). `src/index.ts` uses it in

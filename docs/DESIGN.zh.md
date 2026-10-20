@@ -158,6 +158,11 @@ TTL，把一个已经结束回合的百分比永远留在屏幕上。
   `PROGRESS_MOMENT_TTL_MS`（10 秒），并且绝不存成该会话的常态气泡，所以心跳和下一个
   `turn/start` 都无法给它续命。
 
+这十秒里由它独占槽位：会话条目上的 `momentAt` 让 `adoptSummary` 拒绝活动行——因为
+agent 通常刚把列表点完就接着说话，下一个流式增量会在一个限流窗口内把它换掉，于是
+用户最想看的那一个气泡恰好成了永远看不到的那个。而带活进度的新 `todo/write` 或
+`goal/change` 属于计量、不属于概要，所以真有活重新开始时它照样接管。
+
 `src/progress.ts` 里的 `hasLiveProgress` 是这层区分背后的唯一判断：对已完成的列表和
 已完成的目标返回 false，对被阻塞的目标返回 true（等人不算已经结束）。`src/index.ts`
 在三处用它——`turn/start` 的重播保护、活动回退的闸门、`turn/end` 的退休——让这三处
