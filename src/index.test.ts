@@ -85,6 +85,21 @@ function assertAnnounceable(a: Record<string, unknown>): void {
 const session = (id: string) => ({ id })
 
 /**
+ * Run `body` with a settable clock, so the stream throttle can be stepped over
+ * instead of waited out.
+ */
+function withClock(body: (advance: (ms: number) => void) => void): void {
+  const realNow = Date.now
+  let now = realNow()
+  Date.now = () => now
+  try {
+    body(ms => { now += ms })
+  } finally {
+    Date.now = realNow
+  }
+}
+
+/**
  * Run `body` with the heartbeat captured instead of scheduled, so the timer can
  * be fired deterministically rather than waiting out a real 10 s interval.
  */
@@ -556,6 +571,97 @@ describe('pet-progress host half', () => {
       fire()
       assert.equal(announcements.at(-1)!.amount, '正在核对构建产物')
     })
+  })
+
+  // The durable `assistant/message` lands only when the attempt finishes, so a
+  // fallback fed by it alone says nothing while the model is actually writing.
+  // The live stream is what makes the bubble track the model in real time.
+  it('streams the model output into the bubble, throttled', () => {
+    withClock(advance => {
+      const { ctx } = makeCtx()
+      const { pet, announcements } = makePet()
+      apply({ ...ctx, pet } as never, {})
+
+      const say = (text: string) => ctx.emit('agent/assistant-stream', {
+        agent: { session: session('s1') },
+        frame: { type: 'chunk', chunk: { type: 'text-delta', text } },
+      })
+
+      say('我在检查构建')
+      assert.equal(announcements.length, 1)
+      assert.equal(announcements[0]!.title, '最近输出')
+      assert.equal(announcements[0]!.amount, '我在检查构建')
+
+      // Inside the throttle window the buffer still grows, but the pet's slot is
+      // not touched — a bubble re-rendered per delta is unreadable.
+      say('配置')
+      assert.equal(announcements.length, 1)
+
+      advance(500)
+      say('并重新跑测试')
+      assert.equal(announcements.length, 2)
+      assert.equal(announcements[1]!.amount, '我在检查构建配置并重新跑测试')
+    })
+  })
+
+  it('ignores the live stream for a session that has a measurement', () => {
+    const { ctx } = makeCtx()
+    const { pet, announcements } = makePet()
+    apply({ ...ctx, pet } as never, {})
+
+    ctx.emit('session/event', session('s1'), {
+      type: 'todo/write',
+      data: { todos: [{ content: 'a', status: 'pending' }, { content: 'b', status: 'in_progress' }] },
+    })
+    const before = announcements.length
+
+    ctx.emit('agent/assistant-stream', {
+      agent: { session: session('s1') },
+      frame: { type: 'chunk', chunk: { type: 'text-delta', text: '闲聊' } },
+    })
+    assert.equal(announcements.length, before, 'a measured session never falls back')
+  })
+
+  it('starts a fresh live transcript each turn', () => {
+    withClock(advance => {
+      const { ctx } = makeCtx()
+      const { pet, announcements } = makePet()
+      apply({ ...ctx, pet } as never, {})
+
+      const say = (text: string) => ctx.emit('agent/assistant-stream', {
+        agent: { session: session('s1') },
+        frame: { type: 'chunk', chunk: { type: 'text-delta', text } },
+      })
+
+      // No `turn/end` in between: the buffer has to be reset by `turn/start`
+      // alone, or the new turn's line would open with the old turn's words.
+      say('第一轮说的话')
+      ctx.emit('session/event', session('s1'), { type: 'turn/start', data: { turn: 2 } })
+      advance(500)
+      say('第二轮')
+      assert.equal(announcements.at(-1)!.amount, '第二轮')
+    })
+  })
+
+  it('says what a tool call is for, not only which tool', () => {
+    const { ctx } = makeCtx()
+    const { pet, announcements } = makePet()
+    apply({ ...ctx, pet } as never, {})
+
+    ctx.emit('session/event', session('s1'), {
+      type: 'tool/call',
+      data: { callId: 'c1', name: 'pwsh', arguments: JSON.stringify({ command: 'npm test' }) },
+    })
+    assert.equal(announcements.at(-1)!.amount, '正在调用 pwsh：npm test')
+
+    const read = makeCtx()
+    const second = makePet()
+    apply({ ...read.ctx, pet: second.pet } as never, {})
+    read.ctx.emit('session/event', session('s9'), {
+      type: 'tool/call',
+      data: { callId: 'c2', name: 'read', arguments: JSON.stringify({ file_path: 'D:\\p\\src\\progress.ts' }) },
+    })
+    assert.equal(second.announcements.at(-1)!.amount, '正在调用 read：progress.ts')
   })
 
   // Regression: the bubble used to survive the end of the turn. Because the

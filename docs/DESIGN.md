@@ -35,12 +35,13 @@ it.
 ## Why a sibling plugin, not a patch
 
 The pet's own source is never modified, because it is an npm dependency that a
-future `dsh plugin add` would overwrite. Instead this plugin uses the three
-extension points the pet already publishes:
+future `dsh plugin add` would overwrite. Instead this plugin uses the extension
+points the pet already publishes:
 
 | Seam | Used for |
 | --- | --- |
 | `ctx.on('session/event', …)` | Reading `todo/write` + `goal/change`, retiring on `turn/end`, replaying on `turn/start`; the same channel also carries the turn/step/tool/message events behind the activity line — the pet listens on it too, so both observe every durable event |
+| `ctx.on('agent/assistant-stream', …)` | The live model output for the activity line, read from `text-delta` chunks. A process-local publication rather than a session event, so the session is taken from `agent.session.id` |
 | `ctx.pet.announce(…)` | Publishing the progress bubble into the pet's existing announcement stack |
 | `ctx.pet.registerPanelAction(…)` | A `进度` button that prints the full todo list, since the bubble is one line |
 
@@ -89,9 +90,22 @@ A percentage needs something to measure, and plenty of sessions never write a to
 list — a plain question-and-answer turn has nothing to count. Those sessions used
 to show nothing at all, leaving the pet's own phase word as the only signal.
 
-The fallback is a **plain activity line**: the pet's phase vocabulary
-(`正在调用工具`, `等待模型响应`, …) or, better, the model's most recent words. It
-carries **no `percent`** and does not pretend to be a measurement.
+The fallback is a **plain activity line**, and it draws on three sources in
+order: the model's own output *as it is streamed* (`agent/assistant-stream`,
+`text-delta` chunks), the purpose of the tool it just called
+(`正在调用 pwsh：npm test`), and only then the pet's bare phase word
+(`等待模型响应`, …). It carries **no `percent`** and does not pretend to be a
+measurement.
+
+The live stream is read rather than the durable `assistant/message` because the
+durable event lands only when the attempt finishes — a fallback fed by it alone
+says nothing for exactly the stretch of time the user is watching. The
+publication is decoded structurally (`readLiveDelta` in `src/index.ts`) against
+the fields the plugin needs (`agent.session.id`, `frame.chunk.text`), never by
+importing the agent's frame types, so a change on that side degrades to "no live
+line" instead of a throwing listener. Reasoning deltas are skipped on purpose:
+the line is the model's *output*, and the pet's own bubble already covers
+deliberation with its phase.
 
 That line needs the one shape the announcement contract does *not* have. The pet
 validates every payload: `plan` requires a `percent`, `balance` and `cost`
@@ -110,18 +124,30 @@ Four rules keep that line honest and stable:
 - **It applies only to sessions with nothing to measure.** While a todo list or
   goal exists, activity events are not even folded, so a busy measured turn pays
   nothing for the fallback. The line appears only once both are gone.
-- **Silence beats boilerplate.** `thinking` and `review` are suppressed unless
-  the model itself said something (`QUIET_PHASES` in `src/index.ts`), so the
-  bubble does not flicker between the model's words and `正在思考` between tool
-  calls. A phase that names something concrete — `waiting`, `tool` — always
-  publishes.
-- **A nameless tool call says nothing.** `readActivity` returns `undefined` for a
-  `tool/call` with no usable `name`, because the previous line already said more
-  than the generic replacement would. A named call shows `正在调用 <name>`.
+- **Silence beats boilerplate.** The bare phase line publishes only when it names
+  something concrete (`waiting`, `tool`); `thinking` and `review` are suppressed
+  (`QUIET_PHASES` in `src/index.ts`) so the bubble does not flicker back to
+  `正在思考` between two deltas of the same sentence. The model's own words always
+  publish.
+- **A tool call says what it is for.** `toolHint` in `src/progress.ts` reads the
+  most specific argument the session stored — `command`, then `query`, `path`,
+  `file_path` (shown by base name), `url`, `name` — and `readActivity` appends it,
+  giving `正在调用 read：progress.ts` instead of `正在调用工具`. The arguments
+  arrive as JSON *text*, so they are parsed structurally; a bad payload degrades
+  to the bare tool name, and a call with no usable name returns `undefined`
+  because the previous line already said more than the generic replacement.
 - **The line is summary-only state.** It claims no slot worth replaying, so
   `turn/end` *deletes* the session entry instead of parking it, and the next
-  `turn/start` starts clean. The parked-view rule below covers todo-bearing
-  sessions only.
+  `turn/start` starts clean — including the live-text buffer, so a new turn never
+  opens with the previous turn's words. The parked-view rule below covers
+  todo-bearing sessions only.
+
+Repaints are throttled: deltas arrive far faster than a bubble can be read, so
+`src/index.ts` repaints at most once per `STREAM_PUBLISH_MS` (400 ms) while
+buffering up to `STREAM_BUFFER_MAX` (600) characters, and only the newest
+`ACTIVITY_TEXT_MAX` characters of that buffer are shown — the tail is the part
+that says what is happening *now*.
+
 
 The lead names the source: `当前过程` for a phase line, `最近输出` for the model's
 own words. The body is the line itself.

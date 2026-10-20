@@ -38,6 +38,7 @@ import {
   announcePayload,
   foldProgressEvent,
   hasLiveProgress,
+  liveTextLine,
   readActivity,
   renderBubble,
   PROGRESS_MOMENT_TTL_MS,
@@ -62,6 +63,25 @@ export const PROGRESS_ACTION_ID = 'pet-progress'
  */
 export const PROGRESS_HEARTBEAT_MS = 10_000
 
+/**
+ * Minimum spacing between two stream-driven bubble updates.
+ *
+ * The model streams dozens of deltas a second and the bubble is one line, so
+ * publishing per delta would re-render the pet for changes the reader cannot
+ * follow. 400 ms is fast enough to feel live and slow enough to read.
+ */
+const STREAM_PUBLISH_MS = 400
+
+/**
+ * How much live text is kept per turn.
+ *
+ * Only the tail is ever shown (`liveTextLine`), so this bound is about memory
+ * rather than display: a long turn would otherwise grow the buffer without limit.
+ * 600 characters is several times the 120-character window, which leaves the line
+ * stable when a delta lands mid-word.
+ */
+const STREAM_BUFFER_MAX = 600
+
 /** How many sessions keep independent progress state. */
 const MAX_TRACKED_SESSIONS = 24
 
@@ -76,6 +96,14 @@ interface SessionProgress {
   view?: ProgressView
   /** The last rendered bubble, so the heartbeat can re-publish it verbatim. */
   bubble?: ProgressBubble
+  /**
+   * Rolling live output for this turn, kept only for a session with nothing to
+   * measure — the same session the activity fallback exists for. It is the raw
+   * delta tail, so the next delta can be appended without reparsing history.
+   */
+  stream?: string
+  /** Epoch ms of the last stream-driven publish, for throttling the bubble. */
+  streamAt?: number
   /** Epoch ms of the last change, for idle expiry. */
   at: number
 }
@@ -250,6 +278,14 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
     const key = String(session.id)
     const entry = sessions.get(key) ?? { at: 0 }
 
+    // A new turn starts a new live transcript. Appending to the last turn's
+    // buffer would splice two turns' text together the moment the model starts
+    // writing again, and the tail would open with the previous turn's words.
+    if (event.type === 'turn/start') {
+      entry.stream = undefined
+      entry.streamAt = undefined
+    }
+
     // A new turn resumes whatever work the last one retired the bubble for. The
     // view is still here, so the bubble comes back without waiting for a
     // `todo/write` that may never arrive (the list only re-emits when it
@@ -335,6 +371,39 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
     if (bubble !== undefined) publish(bubble, moment ? PROGRESS_MOMENT_TTL_MS : undefined)
   }))
 
+  // The durable `assistant/message` only lands once an attempt finishes, which is
+  // exactly when its text stops being news. `agent/assistant-stream` is the live
+  // publication the pet's own projection reads for the same reason: it carries
+  // the model's deltas while they are being written. Buffering them per turn and
+  // reporting the tail is what makes the fallback track the model in real time
+  // instead of jumping one long line at the end of each step.
+  //
+  // Gated like every other activity read: a session with a todo list or a goal has
+  // a measurement, and the summary must never displace it.
+  disposers.push(ctx.on('agent/assistant-stream', (payload: unknown) => {
+    const live = readLiveDelta(payload)
+    if (live === undefined) return
+    const { key, text } = live
+    const entry: SessionProgress = sessions.get(key) ?? { at: 0 }
+    if (hasLiveProgress(entry.view)) return
+
+    const stream = ((entry.stream ?? '') + text).slice(-STREAM_BUFFER_MAX)
+    const line = liveTextLine(stream)
+    if (line === undefined) return
+
+    const now = Date.now()
+    const next: SessionProgress = { ...entry, stream, at: now }
+    sessions.set(key, next)
+
+    // Two doors before the pet's slot is touched: the line must actually have
+    // changed (a delta that only extends a token already on screen does not), and
+    // it must be at least STREAM_PUBLISH_MS since the last stream publish.
+    if (entry.view?.activity?.line === line) return
+    if (entry.streamAt !== undefined && now - entry.streamAt < STREAM_PUBLISH_MS) return
+    next.streamAt = now
+    adoptSummary(key, next, { line, source: 'text', phase: 'review' })
+  }))
+
   /**
    * Record an activity summary for a session that has no todo list and no goal,
    * and publish it if it is worth showing.
@@ -360,6 +429,10 @@ function mountWith(ctx: Context, pet: PetLike, config: ProgressConfig): void {
       ...(publishable
         ? (bubble === undefined ? {} : { bubble })
         : (entry.bubble === undefined ? {} : { bubble: entry.bubble })),
+      // The live buffer and its publish clock belong to the turn, not to this
+      // summary, so a stream-driven update survives the rewrite that publishes it.
+      ...(entry.stream === undefined ? {} : { stream: entry.stream }),
+      ...(entry.streamAt === undefined ? {} : { streamAt: entry.streamAt }),
       at: Date.now(),
     })
     trim()
@@ -429,6 +502,42 @@ function readActivityPayload(event: { type: string; data?: unknown }, phase: Act
     ...(name === undefined ? {} : { name }),
   }
 }
+/**
+ * Read one `agent/assistant-stream` publication down to the two facts this
+ * plugin needs: which session is speaking, and the delta it just said.
+ *
+ * The payload is `{ agent: { session }, frame }` where a frame is only useful
+ * when it is a `chunk` carrying a non-empty `text-delta`. The other chunk kinds
+ * (reasoning deltas, tool-call deltas, start/end) are deliberately skipped: this
+ * line is the model's OUTPUT, and a reasoning delta is deliberation the pet's
+ * own bubble already covers with its phase.
+ *
+ * Read structurally: the plugin never imports the agent's frame types, so a
+ * shape change degrades to "no live line" rather than to a thrown listener.
+ */
+function readLiveDelta(payload: unknown): { key: string; text: string } | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined
+  const record = payload as Record<string, unknown>
+
+  const agent = record.agent
+  if (typeof agent !== 'object' || agent === null) return undefined
+  const session = (agent as Record<string, unknown>).session
+  if (typeof session !== 'object' || session === null) return undefined
+  const id = (session as Record<string, unknown>).id
+  if (typeof id !== 'string' && typeof id !== 'number') return undefined
+
+  const frame = record.frame
+  if (typeof frame !== 'object' || frame === null) return undefined
+  const f = frame as Record<string, unknown>
+  if (f.type !== 'chunk') return undefined
+  const chunk = f.chunk
+  if (typeof chunk !== 'object' || chunk === null) return undefined
+  const c = chunk as Record<string, unknown>
+  if (c.type !== 'text-delta') return undefined
+  if (typeof c.text !== 'string' || c.text === '') return undefined
+  return { key: String(id), text: c.text }
+}
+
 function printProgress(sessions: Map<string, SessionProgress>, displaySession: string | undefined): void {
   if (displaySession === undefined) {
     console.log('[pet-progress] 当前没有进行中的任务')

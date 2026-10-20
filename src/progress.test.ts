@@ -15,10 +15,14 @@ import {
   foldTodos,
   goalPercent,
   hasLiveProgress,
+  liveTextLine,
   renderBubble,
+  toolHint,
   ACTIVE_TODO_MAX,
+  ACTIVITY_TEXT_MAX,
   PROGRESS_AMOUNT_MAX,
   PROGRESS_TITLE_MAX,
+  TOOL_HINT_MAX,
   type ProgressView,
 } from './progress.ts'
 
@@ -316,6 +320,59 @@ describe('hasLiveProgress', () => {
       total: 2, completed: 2, pending: 0, inProgress: 0, percent: 100,
       goal: { objective: 'g', phase: 'blocked', maxGoalRounds: 4, roundsStarted: 2 },
     }), true)
+  })
+})
+
+describe('toolHint', () => {
+  it('reads the purpose out of the arguments the session stores', () => {
+    // The session stores `arguments` as JSON text, not as an object.
+    assert.equal(toolHint('{"command":"npm test"}'), 'npm test')
+    // An already-parsed object is accepted too, so a call site that has the
+    // parsed value does not have to re-serialise it.
+    assert.equal(toolHint({ command: 'git status' }), 'git status')
+  })
+
+  it('shows a file by its base name, because that is the subject', () => {
+    assert.equal(toolHint({ file_path: 'D:\\dsh\\plugins\\src\\index.ts' }), 'index.ts')
+    assert.equal(toolHint({ path: '/home/me/project/README.md' }), 'README.md')
+    // A trailing separator has no base name; the full path is better than ''.
+    assert.equal(toolHint({ path: '/tmp/dir/' }), '/tmp/dir/')
+  })
+
+  it('prefers the most specific key and falls back down the list', () => {
+    assert.equal(toolHint({ command: 'npm test', path: '/a/b.ts' }), 'npm test')
+    assert.equal(toolHint({ query: 'announce contract' }), 'announce contract')
+    assert.equal(toolHint({ name: 'search' }), 'search')
+  })
+
+  it('bounds the hint and says nothing rather than guessing', () => {
+    assert.equal(toolHint({ command: 'x'.repeat(200) })!.length, TOOL_HINT_MAX)
+    assert.equal(toolHint(undefined), undefined)
+    assert.equal(toolHint({}), undefined)
+    assert.equal(toolHint('{not json'), undefined)
+    assert.equal(toolHint({ command: '   ' }), undefined)
+    assert.equal(toolHint({ command: 42 }), undefined)
+    assert.equal(toolHint(['npm', 'test']), undefined)
+  })
+})
+
+describe('liveTextLine', () => {
+  it('shows the tail of what the model is writing', () => {
+    assert.equal(liveTextLine('我先看一下构建失败的原因'), '我先看一下构建失败的原因')
+    // A whole message cannot fit, so the newest words win — that is the half
+    // that says what is happening NOW.
+    const long = '开头 '.repeat(60) + '最后一句说出了结论'
+    const line = liveTextLine(long)!
+    assert.ok(line.startsWith('…'), 'a tail is marked as elided')
+    assert.ok(line.endsWith('最后一句说出了结论'))
+    assert.ok(line.length <= ACTIVITY_TEXT_MAX)
+  })
+
+  it('says nothing while the buffer is empty', () => {
+    assert.equal(liveTextLine(''), undefined)
+    assert.equal(liveTextLine('   \n '), undefined)
+    assert.equal(liveTextLine(undefined), undefined)
+    assert.equal(liveTextLine(42), undefined)
   })
 })
 

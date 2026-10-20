@@ -1,4 +1,4 @@
-# dsh-pet-progress
+﻿# dsh-pet-progress
 
 **English** · [中文说明](README.zh.md)
 
@@ -44,7 +44,7 @@ A small bubble above the pet, updated whenever the todo list or the goal changes
 | Long-lived goal with no todos | `2/8 轮` — the goal's round budget |
 | Goal finished | `目标完成` in green — also a moment |
 | Goal blocked | The block reason, in place of progress |
-| No todo list and no goal | A plain line with no percentage — `等待模型响应`, `正在调用工具`, or the model's own words, led by `当前过程` or `最近输出` |
+| No todo list and no goal | A plain line with no percentage — what the model is writing at this moment (`最近输出`), or what the tool it just called is for (`当前过程`) |
 
 A standing bubble fades out about 30 seconds after the last progress update, so a
 finished turn doesn't leave a stale percentage on screen; it comes back by itself
@@ -71,6 +71,11 @@ pet panel and the complete todo list is written to the dsh log.
   goals your agent writes; the plugin never infers progress from how long
   something has been running. Without either, it shows the plain activity line
   instead of a number.
+- **It says what is happening, not just which phase.** With no task list it
+  follows the model's own output as it is written — the newest words, since
+  those are the ones that say what is going on now — and it names what a tool
+  call is *for* (`正在调用 pwsh：npm test`, `正在调用 read：progress.ts`), not only
+  that a tool is running.
 
 ## Requirements
 
@@ -115,7 +120,7 @@ cordis loader does no transpilation. **After editing `src/`, rebuild and commit
 
 ```bash
 node build.mjs              # rebuild lib/ from src/
-node --test src/*.test.ts   # 55 tests, node:test only
+node --test src/*.test.ts   # 75 tests, node:test only
 ```
 
 To work on the code, skip installing and point the profile at your checkout:
